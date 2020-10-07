@@ -1,15 +1,10 @@
-# Dissertation: Assessing balanced approaches to predict student dropout
+# Assessing balanced approaches to predict student dropout
 
 ## Description
 This repository contains the code used for my Dissertation for the MSc Applied Social Data Science at LSE. The data pre-process, including cleaning and creating the final database was done using R. The balancing methods and machine models were created using Python.
 
 ## The Project
 The main goal of this project was to develop models to identify first-year students at risk of dropping out of Technical Training Centres, Professional Institutes and Universities in Chile, using administrative information available from official records.
-
-### Research Questions
-1. What classifying algorithm provides the best performance identifying first-year dropout students in higher education in Chile?
-2. What resampling technique is most effective in addressing the problems of imbalanced data for the prediction of student attrition in higher education in Chile?
-3. What are the factors that contribute the most to predict the probability of student dropout out during the first year of higher education in Chile?
 
 ### Abstract
 Student attrition in higher education is a multidimensional problem that carries negative repercussions for individuals, institutions and society. Predictive models focused on identifying students at risk of dropping out can assist institutions in developing interventions to improve retention rates.
