@@ -1,0 +1,269 @@
+---
+title: "Analysis of Data consistency"
+output: html_notebook
+---
+
+The following notebook performs an analysis of the consistency of the data, including: 
+- Detecting errors that violate the constraints based on real-world knowledge about education.
+- Detecting cross-dataset inconsistent between the Enrolment in Higher Education and the Performance datasets.
+Observations are alse removed based on the following criteria:
+- Students graduated from highschool before 2006
+- Observations with missing data in key variables
+
+################################################################################
+### 1. Load data and packages
+
+```{r, message=FALSE, warning=FALSE}
+# Load packages
+library(data.table)
+library(tidyverse)
+```
+
+```{r}
+# Load data
+#drop_dt <- readRDS("2_data/saved_R_objects/06_drop_nem_data_2009_2018.RDS")
+drop_dt <- readRDS("2_data/saved_R_objects/07_drop_simce_ive_data.RDS")
+```
+
+################################################################################
+### 2. Detect and remove cases with not useful data
+
+**The following cases are removed from the database:**
+a.- Cases with year of graduation from school between 2002 and 2005. These cases are removed because it is impossible to know whether they were enrolled in a programme in higher education before 2007 (the first year with data for enrolment in higher education).
+b.- Cases enrolled in higher education in programmes with length of less than 3 semesters. These cases are removed because it is not possible to know if the student dropped out or graduated from the programme.
+c.- Cases enrolled in programmes in plans of continuing studies. These cases are removed because the students need to have previous studies to enrol in this type of plan, thus, it may not be their first year of enrolment.
+
+```{r}
+# Remove cases that graduated from highschool before 2006
+#-------------------------------------------------------------------------------
+cat("N graduated hs before 2006:", sum(drop_dt$hs_grad_yr_nem < 2006), "\n")
+drop_dt <- drop_dt[drop_dt$hs_grad_yr_nem > 2005]
+
+# Remove cases with first year of enrolment before the year detected in base
+#-------------------------------------------------------------------------------
+cat("N from another programme in same inst:", sum(drop_dt$year_ori_enrol==9998), "\n")
+cat("N from another programme in another inst:", sum(drop_dt$year_ori_enrol==9999), "\n")
+cat("N 1st year of enrolment before detected:", sum(drop_dt$year_ori_enrol<drop_dt$enrol_year), "\n")
+drop_dt <- drop_dt[drop_dt$year_ori_enrol==drop_dt$enrol_year]
+drop_dt[, year_ori_enrol:= NULL]
+```
+
+```{r}
+# Remove cases enroled in HE in programs of length 3 semesters or less
+#-------------------------------------------------------------------------------
+# Replace NA to 0
+set(drop_dt, which(is.na(drop_dt[["prog_len"]])), "prog_len", 0)
+cat("N programmes shorter than 2 semesters:", sum(drop_dt$prog_len <= 3), "\n")
+drop_dt <- drop_dt[drop_dt$prog_len > 3]
+
+# Remove cases enroled in programmes in special plans or continuing studies
+#-------------------------------------------------------------------------------
+cat("N Not in regular plan:", sum(drop_dt$prog_plan!="Plan Regular"), "\n")
+drop_dt <- drop_dt[drop_dt$prog_plan == "Plan Regular"]
+drop_dt[, prog_plan:= NULL]
+```
+
+################################################################################
+### 3. Detect and remove cases with obvious errors (inconsistencies)
+
+Obvious errors are considered records that are not consistent with real-world situation.
+
+**The following cases are removed from the database:**
+a.- Cases that are enrolled in higher education before their year of graduation from high school. These cases are removed because to enrol in higher education a student needs to have completed secondary education.
+
+```{r}
+# Remove cases enrolled in higher education before finishing high school
+#-------------------------------------------------------------------------------
+drop_dt[, enrol_gap_nem:= enrol_year - hs_grad_yr_nem]
+# Table of cases
+cat("N enroled in he before graduating:", sum(drop_dt$enrol_gap_nem <= 0), "\n")
+# Remove cases
+drop_dt <- drop_dt[drop_dt$enrol_gap_nem > 0]
+```
+
+- The detection of cases that are enrolled in higher education before their year of graduation from high school is preformed using the data from the database of application to highed education (NEM database).
+
+b.- Cases whose last level in the data is in primary education and therefore, are never enroled in secondary education. It's mandatory to have completed secondary education to enrol in Higher education, therefore, these cases are errors.
+- This cases are no longer removed because they are contained in the database of application to highed education (NEM database).
+
+*DO NOT RUN THIS*
+```{r, eval=FALSE}
+# Cases that are never enrolled in secondary education
+#-------------------------------------------------------------------------------
+drop_dt[, hs_cod_ense:=as.numeric(as.character(hs_cod_ense))]
+# cases whose last education level is primary education
+cat("N whose last education is primary education:", sum(drop_dt$hs_cod_ense<300), "\n")
+# Remove cases that never reach secondary education
+drop_dt <- drop_dt[drop_dt$hs_cod_ense > 300]
+drop_dt[, hs_cod_ense:=as.factor(hs_cod_ense)]
+```
+
+################################################################################
+### 4. Analysis of cross-dataset and cross-record consistency of student data
+
+The dataset is analysed to find inconsistencies between the data from different years and the dataset of Enrolment in Higher Education and Performance datasets.
+a.- Data with inconsistent date of birth and gender is removed because it may be mixing up different students under the same ID. 
+
+```{r}
+# Students' date of birth consistency (year and month)
+#-------------------------------------------------------------------------------
+# Students with inconsistent year and month of birth among datasets
+drop_dt$stud_mon_birth <- format(drop_dt$stud_date_birth, "%m")
+drop_dt$stud_mon_birth2 <- format(drop_dt$stud_date_birth2, "%m")
+inconsist_dob <- ifelse(is.na(drop_dt$stud_year_birth!=drop_dt$stud_year_birth2), FALSE,
+                        (drop_dt$stud_year_birth!=drop_dt$stud_year_birth2 &
+                           drop_dt$stud_mon_birth!=drop_dt$stud_mon_birth2))
+cat("N different year and month of birth:", sum(inconsist_dob, na.rm = TRUE), "\n")
+# Remove cases
+drop_dt <- drop_dt[inconsist_dob == FALSE]
+rm(inconsist_dob)
+
+# Students' date of birth consistency (year difference)
+#-------------------------------------------------------------------------------
+# Students with inconsistent year of birth among datasets and differences of more than 1 year
+inconsist_dob <- ifelse(is.na(drop_dt$stud_year_birth!=drop_dt$stud_year_birth2), FALSE,
+                        (drop_dt$stud_year_birth!=drop_dt$stud_year_birth2 &
+                           abs(drop_dt$stud_year_birth-drop_dt$stud_year_birth2)>1))
+cat("N differences of more than 1 year:", sum(inconsist_dob, na.rm = TRUE), "\n")
+# Remove cases
+drop_dt <- drop_dt[inconsist_dob == FALSE]
+rm(inconsist_dob)
+
+# Keep date with correct day of birth for consistent cases
+#-------------------------------------------------------------------------------
+stud_mon_birth <- format(drop_dt$stud_date_birth, "%m")
+stud_mon_birth2 <- format(drop_dt$stud_date_birth2, "%m")
+consist_dob <- ifelse(is.na(drop_dt$stud_year_birth==drop_dt$stud_year_birth2), FALSE,
+                        (drop_dt$stud_year_birth==drop_dt$stud_year_birth2 &
+                           drop_dt$stud_mon_birth==drop_dt$stud_mon_birth2))
+drop_dt$stud_date_birth[consist_dob] <- drop_dt$stud_date_birth2[consist_dob]
+rm(consist_dob, stud_mon_birth, stud_mon_birth2)
+
+# Students' gender consistency
+#-------------------------------------------------------------------------------
+# Students with inconsistent gender among datasets
+inconsist_gend <- (drop_dt$stud_gend!=drop_dt$stud_gend2 & drop_dt$stud_gend_consist>1)
+cat("N different gender (and more than 1):", sum(inconsist_gend, na.rm = TRUE), "\n")
+drop_dt <- drop_dt[inconsist_gend == FALSE]
+rm(inconsist_gend)
+
+# Remove extra variables
+#-------------------------------------------------------------------------------
+vars_remove <- c("stud_gend2","stud_gend_consist", "stud_date_birth2",
+                 "stud_year_birth2", "stud_dob_consist", "stud_dob_consist_perf")
+drop_dt[, (vars_remove):=NULL]
+rm(vars_remove)
+```
+
+b- cases with inconsistencies in their "Comuna". No cases are removed.
+```{r}
+# Students' comuna consistency
+#-------------------------------------------------------------------------------
+message("Distribution by number of comunas for a student")
+table(drop_dt$stud_comuna_num, useNA = "always")
+
+# Number of different programmes in Higher Education
+#-------------------------------------------------------------------------------
+message("Distribution by Number of different programmes in Higher Education")
+table(drop_dt$num_uniq_prog)
+```
+
+################################################################################
+### 5. Subset variables and save database
+
+```{r}
+# Keep relevant variables
+#-------------------------------------------------------------------------------
+keep_vars <- c(
+  # Student Demographic characteristics
+  "mrun", "stud_comuna", "stud_com_ive", "stud_gend", "stud_year_birth",
+  # Enrolment in Higher Education (HE)
+  "enrol_year", "enrol_he_age", "enrol_gap_nem",
+  # Outcome Higher Education
+  "withdraw", "dropout", "excluded", "change", "drop_change",
+  # Higher Education Institution characteristics
+  "inst_code", "inst_type", "inst_control", "inst_cruch", "inst_accred",
+  # Higher Education Programme characteristics
+  "prog_code", "prog_jornada", "prog_level", "prog_tuition", "prog_accredit",
+  "prog_len", "prog_area1", "prog_area2", "prog_area3", "scholarship",
+  # High school characteristics
+  "hs_rbd_nem", "hs_nse", "hs_control_simce", "hs_rural_simce", "hs_simce_avg",
+  "hs_ed_type_all",
+  # Students' Performance in highschool
+  "hs_grad_yr_nem", "hs_gpa_avg",  "hs_attend_avg", "hs_attend_med", 
+  "hs_fail_years", "hs_years_out", "hs_grad_age", "hs_nem_nem",  "hs_pctl_nem")
+setcolorder(drop_dt, keep_vars)
+drop_dt <- drop_dt[, keep_vars, with = FALSE]
+rm(keep_vars)
+
+# Variables removed
+#-------------------------------------------------------------------------------
+#"stud_comuna_num", "stud_date_birth", "num_yrs_data", "stud_mon_birth", "stud_mon_birth2"
+#"enrol_gap", "num_uniq_prog"
+#"prog_code_2nd", "prog_name", "prog_enrol_fee", "prog_plan",
+#"hs_rbd", "hs_grad_year", "hs_cod_ense", "hs_cod_grado", "hs_cod_ense_1st",
+#"hs_cod_grado_1st", "hs_ed_type", "hs_ed_type_nem", "hs_cod_reg", "hs_cod_com",
+#"hs_control", "hs_control_nem", "hs_rural", "hs_pie"
+```
+
+################################################################################
+### 6. Detect and remove missing cases
+
+```{r}
+# Determine number of NA by variable
+variables_na <- sapply(drop_dt, function(y) sum(is.na(y)))
+cbind(variables_na)
+rm(variables_na)
+```
+
+**The following cases are removed from the database:**
+a.- Cases without any GPA data. These cases don't have the data needed for the model.
+b.- Cases without any attendance data.
+
+```{r}
+# Remove cases that don't have attendance or GPA data
+#-------------------------------------------------------------------------------
+# remove cases without attendance data
+cat("N don't have attendance data:", sum(is.na(drop_dt$hs_attend_avg)), "\n")
+drop_dt <- na.omit(drop_dt, cols="hs_attend_avg")
+# remove cases without GPA data
+cat("N don't have GPA data:", sum(is.na(drop_dt$hs_gpa_avg)), "\n")
+drop_dt <- na.omit(drop_dt, cols="hs_gpa_avg")
+```
+
+c.- Cases without prog_tuition data.
+```{r}
+# remove NA
+cat("N don't programme tuition data:", sum(is.na(drop_dt$prog_tuition)), "\n")
+drop_dt <- na.omit(drop_dt, cols="prog_tuition")
+```
+
+################################################################################
+### 7. Save file
+
+```{r}
+# Save Object
+saveRDS(drop_dt, file = "2_data/saved_R_objects/08_drop_consist_data.RDS")
+```
+
+################################################################################
+### THE END
+################################################################################
+
+################################################################################
+### 2. Annex
+
+```{r, eval=FALSE}
+# Analysis of error in prog code
+#-------------------------------------------------------------------------------
+cat("N with error in prog code for 1st year:", length(grep("_", drop_dt$prog_code)), "\n")
+cat("N with error in prog code for 2nd year:", length(grep("_", drop_dt$prog_code_2nd)), "\n")
+
+error_in_code <- rep(FALSE, nrow(drop_dt))
+error_in_code[grep("_", drop_dt$prog_code)] <- TRUE
+error_in_code[grep("_", drop_dt$prog_code_2nd)] <- TRUE
+
+message("proportion of stay-drop-change in cases with error in code")
+round(prop.table(table(drop_dt$drop_change[error_in_code]))*100,2)
+rm(error_in_code)
+```

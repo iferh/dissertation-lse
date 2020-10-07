@@ -1,0 +1,173 @@
+---
+title: "Scholarship data"
+output: html_notebook
+---
+
+################################################################################
+### 1. Import data and Load packages
+
+```{r, message=FALSE, warning=FALSE}
+# Load packages
+library(data.table)
+library(tidyverse)
+```
+
+```{r}
+# Import Data for Young students (regular)
+#-------------------------------------------------------------------------------
+# create file path
+csv_filepath <- paste0("2_data/data_nem_percentil/nem_y_percentiles_jovenes_2016_1990.csv.gz")
+nem_data <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+names(nem_data) <- tolower(names(nem_data))
+for (i in 2017:2018) {
+  # create file path
+  csv_filepath <- paste0("2_data/data_nem_percentil/nem_y_percentiles_jovenes_",i, ".csv.gz")
+  nem_temp <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+  names(nem_temp) <- tolower(names(nem_temp))
+  # bind rows to data
+  nem_data <- rbindlist(list(nem_data, nem_temp), use.names=TRUE)
+}
+rm(nem_temp, i, csv_filepath)
+```
+
+```{r}
+# Import Data for Adult students (adult education)
+#-------------------------------------------------------------------------------
+# create file path
+csv_filepath <- paste0("2_data/data_nem_percentil/nem_y_percentiles_adultos_2016_1990.csv.gz")
+nem_data_adult <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+names(nem_data_adult) <- tolower(names(nem_data_adult))
+for (i in 2017:2018) {
+  # create file path
+  csv_filepath <- paste0("2_data/data_nem_percentil/nem_y_percentiles_adultos_",i, ".csv.gz")
+  nem_temp <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+  names(nem_temp) <- tolower(names(nem_temp))
+  # bind rows to data
+  nem_data_adult <- rbindlist(list(nem_data_adult, nem_temp), use.names=TRUE)
+}
+rm(nem_temp, i, csv_filepath)
+```
+
+```{r}
+# Bind bow datasets
+#-------------------------------------------------------------------------------
+# create a type of education variable
+nem_data[, ed_type:= "Regular"]
+nem_data_adult[, ed_type:= "Adult"]
+# bind rows into single database
+nem_data <- rbindlist(list(nem_data, nem_data_adult), use.names=TRUE)
+rm(nem_data_adult)
+```
+
+################################################################################
+### 2. Analysis of missing data across datasets
+
+```{r, eval=FALSE}
+# Analyse MRUN missing across datasets
+#-------------------------------------------------------------------------------
+# Import all data of higher education dropouts
+dropout_data <- readRDS("2_data/saved_R_objects/02_dropout_data_2009_2018.RDS")
+drop_dt <- readRDS("2_data/saved_R_objects/05_drop_scholar_data_2009_2018.RDS")
+
+# Create dt with mrun in each database
+all_mrun <- data.table(mrun=dropout_data$mrun)
+all_mrun$not_in_nem <- !(dropout_data$mrun %in% nem_data$mrun)
+all_mrun$not_in_rend <- !(dropout_data$mrun %in% drop_dt$mrun)
+
+# Tables of missing cases
+message("Table of MRUN not in Rend and/or NEM data")
+table(not_in_nem=all_mrun$not_in_nem, not_in_rend=all_mrun$not_in_rend)
+cat("\n")
+cat("               MRUN not in Rend data: ", sum(all_mrun$not_in_rend) , "\n")
+cat("MRUN not in Rend and not in NEM data: ", sum(all_mrun$not_in_rend & all_mrun$not_in_nem) , "\n")
+cat("    MRUN in NEM but not in Rend data:  ", sum(all_mrun$not_in_rend & !all_mrun$not_in_nem) , "\n")
+cat("    MRUN in Rend but not in NEM data: ", sum(!all_mrun$not_in_rend & all_mrun$not_in_nem) , "\n")
+cat("               MRUN in both datasets:", sum(!all_mrun$not_in_rend & !all_mrun$not_in_nem) , "\n")
+cat("% MRUN in both datasets:", round(sum(!all_mrun$not_in_rend & !all_mrun$not_in_nem)/nrow(all_mrun)*100,1), "\n")
+rm(all_mrun, dropout_data)
+```
+
+################################################################################
+### 3. Remove duplicated cases
+
+```{r}
+# Remove duplicates in mrun
+#-------------------------------------------------------------------------------
+# fix format of NEM variable
+nem_data$nem <- gsub(',','.', nem_data$nem)
+nem_data[, nem:= as.numeric(nem)]
+# Set order of rows
+setorderv(nem_data, cols = c("mrun", "agno_egreso", "ed_type", "nem"), order = c(1,-1,-1,-1))
+# Remove duplicated
+nem_data[, mrun_dupl:= duplicated(mrun)]
+nem_data <- nem_data[mrun_dupl==FALSE]
+rm_vars <- c("puesto_10", "puesto_30", "mrun_dupl")
+nem_data[, (rm_vars):=NULL]
+rm(rm_vars)
+```
+
+################################################################################
+### 3. Merge with data dropout data
+
+```{r}
+# Merge data
+#-------------------------------------------------------------------------------
+# Load data of higher education dropouts
+drop_dt <- readRDS("2_data/saved_R_objects/05_drop_scholar_data_2009_2018.RDS")
+# recode variable of school control
+hs_depen <- cbind.data.frame(
+  "code" = c(0, 1, 2, 3, 4, 5, 6),
+  "control" = c("None", "Public", "Public", "Charter",
+                "Private", "CAD", "Public"), stringsAsFactors = FALSE)
+nem_data[.(cod_depe = hs_depen$code, to = hs_depen$control),
+         on = "cod_depe", control := i.to]
+nem_data[, control:= as.factor(control)]
+nem_data[, cod_depe:= NULL]
+rm(hs_depen)
+# Rename variables
+setcolorder(nem_data, "mrun")
+setnames(nem_data, old = c("agno_egreso", "percentil"), new = c("grad_yr", "pctl"))
+names(nem_data) <- append("mrun", paste0("hs_", names(nem_data)[-1], "_nem"))
+# Merge datasets keeping only matches
+dt1 <- merge(drop_dt, nem_data, by = "mrun", all = FALSE)
+```
+
+```{r}
+# Analyse differences in data
+#-------------------------------------------------------------------------------
+# Year of graduation from high school
+cat("% same grad year:")
+prop.table(table(dt1$hs_grad_yr_nem == dt1$hs_grad_year))*100
+cat("\n")
+#table(dt1$hs_grad_yr_nem, dt1$hs_grad_year)
+# RBD
+cat("\n", "% same RBD:")
+prop.table(table(dt1$hs_rbd == dt1$hs_rbd_nem))
+# High school control
+cat("\n", "Table same control:")
+table(dt1$hs_control, dt1$hs_control_nem)
+round(prop.table(table(dt1$hs_control, dt1$hs_control_nem),1)*100,1)
+# Education type
+cat("\n", "Table same Ed Type:")
+round(prop.table(table(dt1$hs_ed_type_nem, dt1$hs_ed_type),1)*100,1)
+# GPA V. NEM data
+dt2 <- na.omit(dt1, cols="hs_gpa_avg")
+# correlation between gpa and NEM
+cat("\n", "Correlation between GPA and NEM:", cor(dt2$hs_gpa_avg, dt2$hs_nem_nem) , "\n")
+# range NEM
+cat("Range NEM:", range(dt2$hs_nem_nem) , "\n")
+cat("Range GPA:", range(dt2$hs_gpa_avg) , "\n")
+rm(dt2)
+```
+
+################################################################################
+### 6. Save database
+
+```{r}
+# Save Object
+saveRDS(dt1, file = "2_data/saved_R_objects/06_drop_nem_data_2009_2018.RDS")
+```
+
+################################################################################
+### THE END
+################################################################################

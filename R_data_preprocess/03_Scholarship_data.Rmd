@@ -1,0 +1,159 @@
+---
+title: "Scholarship data"
+output: html_notebook
+---
+
+################################################################################
+### 1. Load data and packages
+
+```{r, message=FALSE, warning=FALSE}
+# Load packages
+library(data.table)
+library(tidyverse)
+```
+
+```{r}
+# Load data
+dropout_dt <- readRDS("2_data/saved_R_objects/04_dropout_rendim_data_2009_2018.RDS")
+```
+
+################################################################################
+### 2. Modifiy inconsistencies in databases
+
+**DO NOT RUN THIS**
+```{r, eval=FALSE}
+# Changes to names of variables in datasets to mantain consistency
+#-------------------------------------------------------------------------------
+for (i in 2008:2019) {
+  # create file path
+  csv_filepath <- paste0("2_data/data_becas_creditos/asignacion_",i, ".csv")
+  # read csv from compressed file
+  scholar_temp <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+  # change variable name to match other years
+  names(scholar_temp) <- tolower(names(scholar_temp))
+  setnames(scholar_temp, old = "beneficio_becaofscu",
+           new = "beneficio_beca_fscu", skip_absent=TRUE)
+  setcolorder(scholar_temp, c("anio_beneficio", "mrun", "beneficio_beca_fscu"))
+  # save base with changes
+  write_csv2(scholar_temp, csv_filepath)
+  # removing object
+  rm(scholar_temp, csv_filepath, i)
+}
+```
+
+################################################################################
+### 3. Import Scholarship datasets
+
+**DO NOT RUN THIS**
+```{r, eval=FALSE}
+# Import Performance dataset year by year
+#-------------------------------------------------------------------------------
+ImportScholarOne <- function(i) {
+  # create file path
+  csv_filepath <- paste0("2_data/data_becas_creditos/asignacion_",i, ".csv.gz")
+  # read csv from compressed file
+  temp_obj <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+  # variable names to lowercase
+  names(temp_obj) <- tolower(names(temp_obj))
+  # remove cases not enroled in higher education (from ed.superior databases)
+  temp_obj <- temp_obj[temp_obj$mrun %in% dropout_dt$mrun]
+  # remove duplicated mrun
+  temp_obj <- temp_obj[!duplicated(temp_obj$mrun)]
+  return(temp_obj)
+}
+# Import data "rendimiento" one year
+scholar_2019 <- ImportScholarOne(2019)
+rm(ImportScholarOne)
+```
+
+```{r}
+# Import databases from 2008 to 2019
+#-------------------------------------------------------------------------------
+ImportScholarAll <- function() {
+  # Loop to import and merge data
+  for (i in 2008:2019) {
+    # create file path
+    csv_filepath <- paste0("2_data/data_becas_creditos/asignacion_",i, ".csv.gz")
+    # read csv from compressed file
+    temp_obj <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+    # variable names to lowercase
+    names(temp_obj) <- tolower(names(temp_obj))
+    # remove cases not enroled in higher education (from ed.superior databases)
+    temp_obj <- temp_obj[temp_obj$mrun %in% dropout_dt$mrun]
+    # remove duplicated mrun
+    temp_obj <- temp_obj[!duplicated(temp_obj$mrun)]
+    # remove year variable
+    temp_obj$anio_beneficio <- NULL
+    # change names of variables (except mrun) to include year (e.g. "_2007")
+    setnames(temp_obj, old = "beneficio_beca_fscu", new = paste0("benef_beca_fscu_", i))
+    # merge all the datasets into one
+    if (i == 2008) {
+      scholar_all <- temp_obj
+      }else {
+        setkey(scholar_all, mrun)
+        scholar_all <- merge(scholar_all, temp_obj, by = "mrun", all = TRUE)
+      }
+    }
+  return(scholar_all)
+  }
+# Import Scholarship data
+scholar_all <- ImportScholarAll()
+rm(ImportScholarAll)
+```
+
+################################################################################
+### 4. Merge databases
+
+```{r}
+# Merge into single DT
+#-------------------------------------------------------------------------------
+# Set keys
+data.table::setkey(scholar_all, mrun)
+data.table::setkey(dropout_dt, mrun)
+# Merge Dropout Data and Performance Data
+dropout_dt <- merge(dropout_dt, scholar_all, by = "mrun", all.x = TRUE)
+rm(scholar_all)
+```
+
+################################################################################
+### 5. Get scholarship for enrolment year
+
+```{r}
+# Get scholarship for enrolment year
+#-------------------------------------------------------------------------------
+# Make vector to subset columns
+scholar_vec <- "enrol_year"
+scholar_vec <- append(scholar_vec, paste0("benef_beca_fscu_", 2008:2019))
+# Create variable with scholarship for year of enrolment
+dropout_dt$scholar_all <- apply(dropout_dt[,..scholar_vec], 1, function(x) {
+  index_sch = match(x[1],2008:2019)
+  return(ifelse(is.na(x[index_sch+1]), "NO", x[index_sch+1]))
+  })
+scholar_vec <- paste0("benef_beca_fscu_", 2008:2019)
+dropout_dt[, (scholar_vec):= NULL]
+rm(scholar_vec)
+```
+
+```{r}
+# Recode scholarship
+#-------------------------------------------------------------------------------
+dropout_dt[, scholarship:= "Scholarship"]
+dropout_dt[scholar_all=="NO", scholarship:= "No"]
+dropout_dt[scholar_all=="GRATUIDAD", scholarship:= "Gratuidad"]
+dropout_dt[scholar_all=="FSCU", scholarship:= "FSCU"]
+dropout_dt[, scholarship:= as.factor(scholarship)]
+dropout_dt$scholarship <- relevel(dropout_dt$scholarship, ref = 3) # Reference: No Scholarship
+dropout_dt[, scholar_all:= NULL]
+```
+
+################################################################################
+### 6. Save database
+
+```{r}
+# Save Object
+saveRDS(dropout_dt, file = "2_data/saved_R_objects/05_drop_scholar_data_2009_2018.RDS")
+```
+
+################################################################################
+### THE END
+################################################################################

@@ -1,0 +1,246 @@
+---
+title: "Vulbnerability"
+output: html_notebook
+---
+
+################################################################################
+### 1. Load packages
+
+```{r, message=FALSE, warning=FALSE}
+# Load packages
+library(data.table)
+library(tidyverse)
+library(readxl) # read excel files
+```
+
+################################################################################
+### 2. Load dropout data and update geographic codes
+
+```{r}
+# Load data and update geographic codes
+#-------------------------------------------------------------------------------
+# Dropout data
+drop_dt <- readRDS("2_data/saved_R_objects/06_drop_nem_data_2009_2018.RDS")
+# Official codes of municipalities updated to 2018
+codigo_comuna <- fread("2_data/data_ive/codigos_comunas_homogeneizados_2018.csv",
+                       sep = ";", encoding = "UTF-8")
+# Recode Code of Municipality of Student to 2018 version
+drop_dt$stud_comuna <- as.numeric(as.character(drop_dt$stud_comuna))
+drop_dt[.(stud_comuna = codigo_comuna$cod_comuna_old,
+          to = codigo_comuna$cod_comuna_2018),
+        on = "stud_comuna", stud_comuna := i.to]
+```
+
+################################################################################
+### 3. Import SIMCE data and merge with dropout data
+
+```{r}
+#-------------------------------------------------------------------------------
+# Import Simce Data
+for (i in 2012:2018) {
+  csv_filepath <- paste0(
+    "2_data/data_simce/simce_2m_rbd/simce2m", i, "_rbd_publica_final.csv.gz")
+  simce_temp <- fread(csv_filepath, encoding = "UTF-8")
+  keep_vars <- c("rbd", "agno", "cod_grupo", "cod_depe2", "cod_rural_rbd",
+                 "prom_lect2m_rbd", "prom_mate2m_rbd")
+  simce_temp <- simce_temp[, ..keep_vars]
+  if (i == 2012) {
+    simce_rbd <- simce_temp
+    } else {
+      # bind rows to data
+      simce_rbd <- rbindlist(list(simce_rbd, simce_temp), use.names=TRUE)
+    }
+  rm(i, csv_filepath, keep_vars, simce_temp)
+}
+# Recode Rural
+df_rural <- data.frame(
+  rural_cod=as.character(1:2), rural_des=c("Urban", "Rural"))
+simce_rbd[.(cod_rural_rbd = df_rural$rural_cod, to = df_rural$rural_des),
+           on = "cod_rural_rbd", cod_rural_rbd := i.to]
+# Recode Dependencia (Control)
+df_depe <- data.frame(
+  depe_cod=as.character(1:4), control=c("Public", "Charter", "Private", "Public"),
+  depe_des=c("Municipal", "Particular subvencionado", "Particular pagado", "SLE"))
+simce_rbd[.(cod_depe2 = df_depe$depe_des, to = df_depe$depe_cod),
+           on = "cod_depe2", cod_depe2 := i.to]
+simce_rbd[.(cod_depe2 = df_depe$depe_cod, to = df_depe$control),
+           on = "cod_depe2", cod_depe2 := i.to]
+# Recode Socioeconomic Level of School
+df_nse <- data.frame(
+  nse_cod=as.character(1:5), nse_des=c("Bajo", "Medio bajo", "Medio", "Medio alto", "Alto"))
+simce_rbd[.(cod_grupo = df_nse$nse_des, to = df_nse$nse_cod),
+           on = "cod_grupo", cod_grupo := i.to]
+rm(df_depe, df_nse, df_rural)
+# Rename variables
+setnames(simce_rbd, old="prom_lect2m_rbd", new="hs_simce_lect")
+setnames(simce_rbd, old="prom_mate2m_rbd", new="hs_simce_mate")
+setnames(simce_rbd, old="cod_grupo", new="hs_nse")
+setnames(simce_rbd, old="cod_rural_rbd", new="hs_rural_simce")
+setnames(simce_rbd, old="cod_depe2", new="hs_control_simce")
+```
+
+```{r}
+# Merge with Dropout Data
+#-------------------------------------------------------------------------------
+drop_dt_merge <- merge(drop_dt, simce_rbd, by.x = c("hs_rbd_nem", "hs_grad_yr_nem"),
+                       by.y = c("rbd", "agno"), all.x = TRUE)
+# Drop cases that graduated before 2012 or after 2018 (without data)
+#-------------------------------------------------------------------------------
+cat("Percentage of NA cases (all under 2012 year of graduation are NA)")
+round(prop.table(
+  table(is.na(drop_dt_merge$hs_control_simce), useNA = "ifany"))*100,2)
+# Drop cases
+drop_dt_merge <- drop_dt_merge[drop_dt_merge$hs_grad_yr_nem>=2012]
+drop_dt_merge <- drop_dt_merge[drop_dt_merge$hs_grad_yr_nem<2018]
+# Make average simce score (language and math)
+drop_dt_merge$hs_simce_avg <- rowMeans(
+  drop_dt_merge[,c("hs_simce_lect", "hs_simce_mate")], na.rm = TRUE)
+# Drop cases without Simce Score
+#-------------------------------------------------------------------------------
+cat("\n cases with NA in simce Mate:", sum(is.na(drop_dt_merge$hs_simce_mate)))
+cat("\n cases with NA in simce Lect:", sum(is.na(drop_dt_merge$hs_simce_lect)))
+cat("\n cases with NA in simce Lect:", sum(is.na(drop_dt_merge$hs_simce_avg)))
+cat("\n")
+drop_dt_merge <- na.omit(drop_dt_merge, "hs_simce_avg")
+# Remove variables to avoid NA
+drop_dt_merge[, hs_simce_lect:= NULL]
+drop_dt_merge[, hs_simce_mate:= NULL]
+```
+
+```{r}
+# Compare poportions of cases of original data vs clean data
+#-------------------------------------------------------------------------------
+cat("\n -- % of cases by inst type, Original base VS Clean base (simce)")
+round(prop.table(table(drop_dt$inst_type))*100,2)
+round(prop.table(table(drop_dt_merge$inst_type))*100,2)
+
+cat("\n -- % cases in Regular or Adult Ed. Original base VS Clean base (simce)")
+prop.table(table(drop_dt$hs_ed_type_nem))*100
+prop.table(table(drop_dt_merge$hs_ed_type_nem))*100
+
+cat("\n -- % of dropouts by inst type, original base")
+round(prop.table(table(drop_dt$inst_type, drop_dt$withdraw),1)*100,2)
+cat("\n -- % of dropouts by inst type, clean base (simce)")
+round(prop.table(table(drop_dt_merge$inst_type, drop_dt_merge$withdraw),1)*100,2)
+```
+
+```{r}
+# remove factor level of None
+drop_dt_merge$hs_control_nem <- factor(drop_dt_merge$hs_control_nem)
+# Recode Type of education of graduation
+drop_dt_merge[, hs_ed_type_all:= as.character(hs_ed_type)]
+drop_dt_merge$hs_ed_type_all[drop_dt_merge$hs_ed_type_nem=="Adult"] <- "Adult"
+drop_dt_merge$hs_ed_type_all[drop_dt_merge$hs_ed_type_all=="Adult Regular"] <- "Adult"
+drop_dt_merge$hs_ed_type_all[drop_dt_merge$hs_ed_type_all=="Adult Vocational"] <- "Adult"
+drop_dt_merge[, hs_ed_type_all:= as.factor(hs_ed_type_all)]
+```
+
+################################################################################
+### 4. Import IVE by Municipality (vulnerability by Commune) and merge
+
+```{r}
+# Import Data of IVE by Commune
+#-------------------------------------------------------------------------------
+for (i in 2010:2017) {
+  csv_filepath <- paste0(
+    "2_data/data_ive/PRIORIDADES-", i, "-IVE-SINAE-BASICA-MEDIA-COMUNA.xlsx")
+  ive_com_temp <- read_xlsx(csv_filepath, sheet = "COMUNA")
+  names(ive_com_temp) <- tolower(names(ive_com_temp))
+  names(ive_com_temp) <- gsub('codigo','cod', names(ive_com_temp))
+  names(ive_com_temp) <- gsub('id','cod', names(ive_com_temp))
+  names(ive_com_temp) <- gsub('comunal','comuna', names(ive_com_temp))
+  names(ive_com_temp) <- gsub(' ','_', names(ive_com_temp))
+  names(ive_com_temp) <- gsub('-','_', names(ive_com_temp))
+  keep_vars <- append("cod_comuna", paste0("ive_sinae_comuna_", i))
+  ive_com_temp <- ive_com_temp[,keep_vars]
+  names(ive_com_temp) <- c("cod_comuna", "ive")
+  ive_com_temp <- ive_com_temp[!is.na(ive_com_temp$cod_comuna),]
+  ive_com_temp[,2] <- ifelse(max(ive_com_temp[,2])>1,
+                             ive_com_temp[,2]/100, ive_com_temp[,2])
+  ive_com_temp$agno <- i
+  if (i == 2010) {
+    ive_comuna <- ive_com_temp
+    } else {
+      # bind rows to data
+      ive_comuna <- rbindlist(list(ive_comuna, ive_com_temp), use.names=TRUE)
+      }
+  rm(i, csv_filepath, ive_com_temp, keep_vars)
+}
+# remove total row
+ive_comuna <- ive_comuna[ive_comuna$cod_comuna!="Total general"]
+# Code variable to numeric
+ive_comuna[, cod_comuna:= as.numeric(cod_comuna)]
+# Recode Code to 2018 version
+ive_comuna[.(cod_comuna = codigo_comuna$cod_comuna_old,
+             to = codigo_comuna$cod_comuna_2018),
+           on = "cod_comuna", cod_comuna := i.to]
+# Order
+setcolorder(ive_comuna, c("cod_comuna", "agno"))
+```
+
+```{r}
+# Obtain IVE by Commune in year of graduation
+#-------------------------------------------------------------------------------
+# Match databases
+drop_dt_merge[, stud_com_ive:= ive_comuna$ive[match(
+  interaction(drop_dt_merge$stud_comuna, drop_dt_merge$hs_grad_yr_nem),
+  interaction(ive_comuna$cod_com, ive_comuna$agno))]]
+```
+
+################################################################################
+### 5. Change types and Save database
+
+```{r}
+# Change types of variables
+drop_dt_merge[, hs_nse:= as.numeric(hs_nse)]
+drop_dt_merge[, hs_control_simce:= as.factor(hs_control_simce)]
+drop_dt_merge[, hs_rural_simce:= as.factor(hs_rural_simce)]
+# Save Object
+saveRDS(drop_dt_merge, file = "2_data/saved_R_objects/07_drop_simce_ive_data.RDS")
+```
+
+    ###########################################################################################################
+    # THE END
+    ###########################################################################################################
+
+################################################################################
+### ANNEX. Import IVE by School (vulnerability by RBD)
+
+```{r, eval=FALSE}
+# Import Data of IVE by RBD
+#-------------------------------------------------------------------------------
+for (i in 2010:2017) {
+  csv_filepath <- paste0(
+    "2_data/data_ive/PRIORIDADES-", i, "-IVE-SINAE-BASICA-MEDIA-COMUNA.xlsx")
+  ive_med_temp <- read_xlsx(csv_filepath, sheet = "MEDIA")
+  names(ive_med_temp) <- tolower(names(ive_med_temp))
+  names(ive_med_temp) <- gsub(' ','_', names(ive_med_temp))
+  names(ive_med_temp) <- gsub('-','_', names(ive_med_temp))
+  names(ive_med_temp) <- gsub('_media','', names(ive_med_temp))
+  ive_med_temp <- ive_med_temp[!is.na(ive_med_temp$rbd),]
+  ive_med_temp <- data.table(ive_med_temp)
+  keep_vars <- c("rbd", paste0("ive_sinae_", i))
+  setcolorder(ive_med_temp, keep_vars)
+  ive_med_temp <- ive_med_temp[, ..keep_vars]
+  names(ive_med_temp)[2] <- "ive"
+  ive_med_temp[,2] <- ifelse(max(ive_med_temp[,2])>1,
+                             ive_med_temp[,2]/100, ive_med_temp[,2])
+  ive_med_temp$agno <- i
+  if (i == 2010) {
+    ive_rbd <- ive_med_temp
+    } else {
+      # bind rows to data
+      ive_rbd <- rbindlist(list(ive_rbd, ive_med_temp), use.names=TRUE)
+      }
+  rm(i, csv_filepath, ive_med_temp, keep_vars)
+}
+```
+
+```{r, eval=FALSE}
+# Obtain IVE by RBD for RBD of graduation
+#-------------------------------------------------------------------------------
+drop_dt[, hs_rbd_ive:= ive_rbd$ive[match(
+  interaction(drop_dt$hs_rbd_nem, drop_dt$hs_grad_yr_nem),
+  interaction(ive_rbd$rbd, ive_rbd$agno))]]
+cat("N cases without IVE in RBD (including Private Schools):", sum(is.na(drop_dt$hs_rbd_ive)))
+```

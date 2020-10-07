@@ -1,0 +1,655 @@
+---
+title: "PSU data"
+output: html_notebook
+---
+
+════════════════════════════════════════════════════════════════════════════════
+╔═╗╔═╗╦ ╦  ╔╦╗╔═╗╔╦╗╔═╗
+╠═╝╚═╗║ ║   ║║╠═╣ ║ ╠═╣
+╩  ╚═╝╚═╝  ═╩╝╩ ╩ ╩ ╩ ╩
+════════════════════════════════════════════════════════════════════════════════
+
+________________________________________________________________________________
+##### Load packages
+```{r, message=FALSE, warning=FALSE}
+# Load packages
+library(data.table)
+library(tidyverse)
+```
+
+________________________________________________________________________________
+##### Changes to the PSU bases
+*DO NOT RUN THIS*
+```{r}
+# Compressing Files
+#-------------------------------------------------------------------------------
+library("R.utils")
+
+# Compress files: PSU Inscritos
+for (i in 2004:2016) {
+  csv_filepath <- paste0(
+    "2_data/data_psu/psu_inscritos/A_INSCRITOS_PUNTAJES_PSU_", i, "_PRIV_MRUN.csv")
+  gzip(filename=csv_filepath, destname=paste0(tolower(csv_filepath),".gz"),
+       overwrite=FALSE, remove=TRUE)
+}
+# Compress files: PSU Postulaciones
+for (i in 2004:2016) {
+  csv_filepath <- paste0(
+    "2_data/data_psu/psu_postulaciones/C_POSTULACIONES_SELECCION_PSU_", i, "_PRIV_MRUN.csv")
+  gzip(filename=csv_filepath, destname=paste0(tolower(csv_filepath),".gz"),
+       overwrite=FALSE, remove=TRUE)
+}
+# Compress files: PSU Socioeconomico
+for (i in 2004:2015) {
+  csv_filepath <- paste0(
+    "2_data/data_psu/psu_socioeconomico/B_SOCIOECONOMICO_DOMICILIO_PSU_", i, "_PRIV_MRUN.csv")
+  gzip(filename=csv_filepath, destname=paste0(tolower(csv_filepath),".gz"),
+       overwrite=FALSE, remove=TRUE)
+}
+rm(i, csv_filepath)
+```
+
+________________________________________________________________________________
+##### Import PSU data
+```{r}
+#-------------------------------------------------------------------------------
+# table of income by category 2002-2007
+# level 6 of income is level 5 plus the difference between level 5 and 4.
+ingreso_2002 <- data.table(
+  tramo=1:6, ingreso=c(278000, 834000, 1400000, 1950000, 2500000, 3050000))
+# table of income by category 2008
+# level 8 of income is level 7 plus the difference between level 7 and 5. 
+ingreso_2008 <- data.table(
+  tramo=1:8, ingreso=c(135000, 270000, 405000, 540000, 675000, 810000, 1080000, 1485000))
+# table of income by category 2009-2015
+# level 12 of income is level 11 plus the difference between level 11 and 10. 
+ingreso_2009 <- data.table(
+  tramo=1:12, ingreso=c(144000, 288000, 432000, 576000, 720000, 864000,
+                      1008000, 1152000, 1296000, 1440000, 1584000, 1728000))
+
+for (i in 2013:2015) {
+  # import scores
+  csv_filepath <- paste0(
+    "2_data/data_psu/psu_inscritos/a_inscritos_puntajes_psu_", i, "_priv_mrun.csv.gz")
+  psu_ptj <- fread(csv_filepath, sep = ";") #, encoding = "UTF-8"
+  names(psu_ptj) <- tolower(names(psu_ptj))
+  setnames(psu_ptj, old = "año_proceso", new = "ano_proceso")
+  setnames(psu_ptj, old = "codigo_enseñanza", new = "codigo_ensenanza")
+  setnames(psu_ptj, old = "año_egreso", new = "ano_egreso")
+  # import socioeconomic status
+  csv_filepath <- paste0(
+    "2_data/data_psu/psu_socioeconomico/b_socioeconomico_domicilio_psu_", i, "_priv_mrun.csv.gz")
+  psu_nse <- fread(csv_filepath, sep = ";") #, encoding = "UTF-8"
+  names(psu_nse) <- tolower(names(psu_nse))
+  setnames(psu_nse, old = "año_proceso", new = "ano_proceso")
+  if (i<2008) {
+    # Make variable of income in CLP
+    psu_nse[.(ingreso_bruto_fam = ingreso_2002$tramo, to = ingreso_2002$ingreso),
+             on = "ingreso_bruto_fam", ingreso_fam_clp := i.to]
+    } else if (i==2008) {
+      psu_nse[.(ingreso_bruto_fam = ingreso_2008$tramo, to = ingreso_2008$ingreso),
+               on = "ingreso_bruto_fam", ingreso_fam_clp := i.to]
+
+    } else {
+      psu_nse[.(ingreso_bruto_fam = ingreso_2009$tramo, to = ingreso_2009$ingreso),
+               on = "ingreso_bruto_fam", ingreso_fam_clp := i.to]
+    }
+  # Make variable of "ingreso" per capita
+  psu_nse[, ingreso_percap := ifelse(
+    grupo_familiar==0, ingreso_fam_clp/1, round(ingreso_fam_clp/grupo_familiar,1))]
+  # Make decile variable
+  psu_nse <- psu_nse %>% mutate(decile = ntile(ingreso_percap, 10))
+  # Merge data
+  psu_temp <- merge(psu_ptj, psu_nse, by = "mrun", all = TRUE, suffixes = c("_ptj", "_nse"))
+  if (i==2013) {
+    psu_data <- psu_temp
+  } else {
+    # bind rows to data
+    psu_data <- rbindlist(list(psu_data, psu_temp), use.names=TRUE)
+  }
+  # set name of data
+  rm(i, csv_filepath, psu_ptj, psu_nse, psu_temp)
+}
+rm(ingreso_2002, ingreso_2008, ingreso_2009)
+```
+
+```{r}
+# make average lan-math psu score
+psu_data[, psu_promlm:= ifelse(puntajes_proceso==1, promlm_actual,
+                           ifelse(puntajes_proceso==2, promlm_anterior,
+                                  ifelse(promlm_actual>promlm_anterior, 
+                                         promlm_actual, promlm_anterior)))]
+# make language psu score
+psu_data[, psu_leng:= ifelse(puntajes_proceso==1, lyc_actual,
+                           ifelse(puntajes_proceso==2, lyc_anterior,
+                                  ifelse(lyc_actual>lyc_anterior, 
+                                         lyc_actual, lyc_anterior)))]
+# make math average psu score
+psu_data[, psu_mate:= ifelse(puntajes_proceso==1, mate_actual,
+                           ifelse(puntajes_proceso==2, mate_anterior,
+                                  ifelse(mate_actual>mate_anterior, 
+                                         mate_actual, mate_anterior)))]
+# make science average psu score
+psu_data[, psu_cien:= ifelse(puntajes_proceso==1, ciencias_actual,
+                           ifelse(puntajes_proceso==2, ciencias_anterior,
+                                  ifelse(ciencias_actual>ciencias_anterior, 
+                                         ciencias_actual, ciencias_anterior)))]
+# make history average psu score
+psu_data[, psu_hist:= ifelse(puntajes_proceso==1, hycs_actual,
+                           ifelse(puntajes_proceso==2, hycs_anterior,
+                                  ifelse(hycs_actual>hycs_anterior, 
+                                         hycs_actual, hycs_anterior)))]
+psu_scores <- c("puntajes_proceso", "promlm_actual", "promlm_anterior",
+                "lyc_actual", "lyc_anterior", "mate_actual", "mate_anterior",
+                "ciencias_actual", "ciencias_anterior", "hycs_actual", "hycs_anterior")
+psu_data[, (psu_scores):= NULL]
+rm(psu_scores)
+```
+
+```{r}
+keep_vars <- c(
+  "mrun",
+  #"tipo_identificacion_ptj",
+  "ano_proceso_ptj",
+  #"cod_sexo",
+  #"fecha_nacimiento_ptj",
+  #"rbd",
+  #"codigo_ensenanza",
+  #"local_educacional",
+  #"unidad_educativa",
+  #"nombre_unidad_educ",
+  #"rama_educacional",
+  #"codigo_region_ptj",
+  #"nombre_region",
+  #"codigo_provincia_ptj",
+  #"nombre_provincia_ptj",
+  #"codigo_comuna_ptj",
+  #"nombre_comuna_ptj",
+  #"ano_egreso",
+  #"promedio_notas",
+  "ptje_nem",
+  "ptje_ranking",
+  "bea",
+  #"tipo_identificacion_nse",
+  #"ano_proceso_nse",
+  #"fecha_nacimiento_nse",
+  "estado_civil",
+  "tiene_trabajo_rem",
+  "horario_trabajo",
+  "horas_que_dedica_trabajo",
+  "de_proseguir_estudios",
+  "grupo_familiar",
+  "cuantos_trabajan_del_grupo_familiar",
+  "quien_es_el_jefe_familia",
+  #"cuantos_estudian_grupo_familiar_prebasica",
+  #"cuantos_estudian_grupo_familiar_basica",
+  #"cuantos_estudian_grupo_familiar_media",
+  #"cuantos_estudian_grupo_familiar_media_4",
+  #"cuantos_estudian_grupo_familiar_superior",
+  #"cuantos_estudian_grupo_familiar_otro",
+  #"ingreso_bruto_fam",
+  "cobertura_salud",
+  "viven_sus_padres",
+  "educacion_padre",
+  "educacion_madre",
+  "situacion_ocupacional_padre",
+  "situacion_ocupacional_madre",
+#  "tipo_organismo_trabajan_padre",
+#  "tipo_organismo_trabajan_madre",
+#  "ocupacion_principal_padre",
+#  "ocupacion_principal_madre",
+#  "rama_actividad_padre",
+#  "rama_actividad_madre",
+  "codigo_region_nse",
+  #"codigo_provincia_nse",
+  #"codigo_comuna_nse",
+  #"nombre_provincia_nse",
+  #"nombre_comuna_nse",
+  #"ciudad",
+  #"codigo_area",
+  #"prefijo_celular",
+  "ingreso_fam_clp",
+  "ingreso_percap",
+  "decile",
+  "psu_promlm",
+  "psu_leng",
+  "psu_mate",
+  "psu_cien",
+  "psu_hist"
+  )
+psu_data <- psu_data[, keep_vars, with = FALSE]
+rm(keep_vars)
+```
+
+```{r}
+# Merge data by MRUN by year of enrolment
+#-------------------------------------------------------------------------------
+drop_dt <- readRDS("2_data/saved_R_objects/08_drop_consist_data.RDS")
+drop_dt[, mrun_enrol_yr:= paste(mrun, enrol_year, sep = "-")]
+psu_data[, mrun_enrol_yr:= paste(mrun, ano_proceso_ptj, sep = "-")]
+all_data <- merge(drop_dt, psu_data, by = "mrun_enrol_yr", all.x = TRUE)
+all_data[, mrun_enrol_yr:= NULL]
+all_data[, ano_proceso_ptj:= NULL]
+all_data[, mrun.y:= NULL]
+setnames(all_data, old = "mrun.x", new = "mrun")
+```
+
+```{r}
+# keep only UNIVERSITY cases
+all_data <- all_data[all_data$inst_type=="University"]
+all_data[, inst_type:= NULL]
+# Remove cases without PSU data  (years 2016-2018)
+all_data <- all_data[!(is.na(all_data$ptje_nem))]
+```
+
+```{r}
+keep_vars <- c(
+  #'stud_comuna',
+  'stud_com_ive',
+  'stud_gend',
+  'stud_year_birth',
+  'enrol_year',
+  'enrol_he_age',
+  'enrol_gap_nem',
+  'withdraw',
+  'dropout',
+  'excluded',
+  #'change',
+  #'drop_change',
+  'inst_code',
+  'inst_control',
+  'inst_cruch',
+  'inst_accred',
+  'prog_code',
+  'prog_jornada',
+  'prog_level',
+  'prog_tuition',
+  'prog_accredit', 
+  'prog_len', 
+  'prog_area1', 
+  #'prog_area2', 
+  'prog_area3', 
+  'scholarship', 
+  'hs_rbd_nem', 
+  'hs_nse', 
+  'hs_control_simce', 
+  'hs_rural_simce', 
+  'hs_simce_avg', 
+  'hs_ed_type_all', 
+  'hs_grad_yr_nem', 
+  'hs_gpa_avg', 
+  'hs_attend_avg', 
+  #'hs_attend_med', 
+  'hs_fail_years', 
+  'hs_years_out', 
+  'hs_grad_age', 
+  #'hs_nem_nem', 
+  'hs_pctl_nem', 
+  #'ano_egreso', 
+  #'ptje_nem', 
+  #'ptje_ranking', 
+  'estado_civil', 
+  'tiene_trabajo_rem', 
+  'horario_trabajo', 
+  'horas_que_dedica_trabajo', 
+  'de_proseguir_estudios', 
+  'grupo_familiar', 
+  'cuantos_trabajan_del_grupo_familiar', 
+  'quien_es_el_jefe_familia', 
+  'cobertura_salud', 
+  'viven_sus_padres', 
+  'educacion_padre', 
+  'educacion_madre', 
+  'situacion_ocupacional_padre', 
+  'situacion_ocupacional_madre', 
+  'codigo_region_nse', 
+  'ingreso_fam_clp', 
+  'ingreso_percap', 
+  'decile', 
+  'psu_promlm', 
+  'psu_leng', 
+  'psu_mate', 
+  'psu_cien', 
+  'psu_hist'
+  )
+all_data <- all_data[, keep_vars, with = FALSE]
+rm(keep_vars)
+```
+
+```{r}
+# remove cases without data
+all_data <- all_data[!(all_data$psu_promlm==0)]
+all_data <- all_data[!(all_data$psu_leng==0)]
+all_data <- all_data[!(all_data$psu_mate==0)]
+#######################################################
+# recode estado civil
+civil_df <- data.table(
+  cod = 0:4, desc = c("Sin datos", "Soltero", "Casado", "Separado", "Viudo"))
+all_data[.(estado_civil = civil_df$cod, to = civil_df$desc),
+             on = "estado_civil", est_civil := i.to]
+all_data[, estado_civil:= NULL]
+rm(civil_df)
+#######################################################
+#all_data <- all_data[!(all_data$educacion_padre==0)]
+#all_data <- all_data[!(all_data$educacion_madre==0)]
+#all_data <- all_data[!(all_data$ptje_ranking==0)]
+setcolorder(all_data, c("dropout", "withdraw", "excluded"))
+```
+
+```{r}
+all_data[, tiene_trabajo_rem:= as.factor(tiene_trabajo_rem)]
+all_data[, horario_trabajo:= as.factor(horario_trabajo)]
+all_data[, de_proseguir_estudios:= as.factor(de_proseguir_estudios)]
+all_data[, quien_es_el_jefe_familia:= as.factor(quien_es_el_jefe_familia)]
+all_data[, cobertura_salud:= as.factor(cobertura_salud)]
+all_data[, viven_sus_padres:= as.factor(viven_sus_padres)]
+all_data[, situacion_ocupacional_padre:= as.factor(situacion_ocupacional_padre)]
+all_data[, situacion_ocupacional_madre:= as.factor(situacion_ocupacional_madre)]
+```
+
+[//]: # ``╔═╗╔═╗╔═╗╔╦╗╦ ╦╦  ╔═╗╔═╗╦╔═╗╔╗╔╔═╗╔═╗``
+[//]: # ``╠═╝║ ║╚═╗ ║ ║ ║║  ╠═╣║  ║║ ║║║║║╣ ╚═╗``
+[//]: # ``╩  ╚═╝╚═╝ ╩ ╚═╝╩═╝╩ ╩╚═╝╩╚═╝╝╚╝╚═╝╚═╝``
+
+```{r}
+# import applications
+for (i in 2013:2015) {
+  csv_filepath <- paste0(
+    "2_data/data_psu/psu_postulaciones/c_postulaciones_seleccion_psu_", i, "_priv_mrun.csv.gz")
+  psu_temp <- fread(csv_filepath, sep = ";") #, encoding = "UTF-8"
+  names(psu_temp) <- tolower(names(psu_temp))
+  setnames(psu_temp, old = "año_proceso", new = "ano_proceso")
+  setnames(psu_temp, old = "pond_año_acad", new = "pond_ano_acad")
+  assign(paste0("post_", i), psu_temp)
+  rm(i, csv_filepath, psu_temp)
+}
+head(all_data$prog_code)
+post_2013
+
+post_2013[94231 %in% post_2013$codigo_carrera]
+
+```
+
+```{r}
+all_data
+```
+
+
+```{r, eval=FALSE}
+
+table(is.na(all_data$ptje_nem), all_data$enrol_year)
+
+str(all_data)
+
+summary(all_data)
+# structure
+str(all_data)
+# see NA
+cbind(sapply(all_data, function(y) sum(is.na(y))))
+# see ceros
+cbind(sapply(all_data, function(y) sum(y==0)))
+
+```
+
+
+
+
+
+```{r}
+library("lattice")
+library("caret")
+# One Hot Encoding to convert categorical variable into numeric
+#-------------------------------------------------------------------------------
+# One-hot encode categorical variables
+one_hot <- caret::dummyVars(~ ., all_data, fullRank = FALSE)
+all_onehot <- predict(one_hot, all_data) %>% as.data.table()
+# make compatible names for variables
+names(all_onehot) <- make.names(names(all_onehot), allow_ = FALSE)
+colnames(all_onehot) <- make.unique(names(all_onehot))
+colnames(all_onehot) <- tolower(names(all_onehot))
+colnames(all_onehot) <- gsub("[..]", ".", names(all_onehot))
+# remove redundant dependant variable and rename
+all_onehot[, dropout.0:= NULL]
+all_onehot[, withdraw.0:= NULL]
+all_onehot[, excluded.0:= NULL]
+setnames(all_onehot, old = "dropout.1", new = "dropout")
+setnames(all_onehot, old = "withdraw.1", new = "withdraw")
+setnames(all_onehot, old = "excluded.1", new = "excluded")
+rm(one_hot)
+# change response variable to factor
+all_onehot[, withdraw:= as.factor(all_onehot$withdraw)]
+#detach(package:caret, unload = TRUE)
+#rm(all_data)
+```
+
+```{r}
+write_csv(all_onehot,"xx-Python/all_data_uni_psu_onehot_dwe.csv")
+
+```
+
+
+```{r, eval=FALSE}
+# Keep relevant variables
+#-------------------------------------------------------------------------------
+keep_vars <- c(
+  # Outcome Higher Education
+  "dropout", "withdraw", "excluded",
+  # Student Demographic characteristics
+  "stud_com_ive", "stud_gend", "stud_year_birth",
+  # Enrolment in Higher Education (HE)
+  "enrol_year", "enrol_he_age", "enrol_gap_nem",
+  # Higher Education Institution characteristics
+  "inst_type", "inst_control", "inst_cruch", "inst_accred",
+  # Higher Education Programme characteristics
+  "prog_jornada", "prog_level", "prog_tuition", "prog_accredit",
+  "prog_len", "prog_area1", "prog_area2", "prog_area3", "scholarship",
+  # High school characteristics
+  "hs_nse", "hs_control_simce", "hs_rural_simce", "hs_simce_avg",
+  "hs_ed_type_all",
+  # Students' Performance in highschool
+  "hs_grad_yr_nem", "hs_gpa_avg",  "hs_attend_avg", "hs_attend_med", 
+  "hs_fail_years", "hs_years_out", "hs_grad_age", "hs_nem_nem",  "hs_pctl_nem",
+  # PSU Data
+  "promedio_notas", "ptje_nem", "ptje_ranking", "promlm", "est_civil",
+  "educacion_padre", "educacion_madre", "decile"
+  )
+setcolorder(all_data, keep_vars)
+all_data <- all_data[, keep_vars, with = FALSE]
+rm(keep_vars)
+```
+
+```{r, eval=FALSE}
+# Analysis of correlation between numeric variables
+#-------------------------------------------------------------------------------
+num_vars <- c("stud_com_ive", "stud_year_birth", "enrol_year", "enrol_he_age",
+              "enrol_gap_nem", "prog_tuition", "prog_len", "hs_nse",
+              "hs_simce_avg", "hs_grad_yr_nem", 
+              "educacion_padre", "educacion_madre", "decile")
+              
+num_vars <- c("hs_gpa_avg", "hs_attend_avg", "hs_attend_med", "hs_fail_years",
+              "hs_years_out", "hs_grad_age", "hs_nem_nem", "hs_pctl_nem",
+              "promedio_notas", "ptje_nem", "ptje_ranking", "promlm")
+
+# Plot correlation
+#-------------------------------------------------------------------------------
+# Correlation matrix
+cor_matrix <- round(cor(all_data[,..num_vars]),2)
+#cor_matrix[lower.tri(cor_matrix)]<- NA
+cor_matrix <- reshape2::melt(cor_matrix, na.rm = TRUE)
+# plot
+ggplot(data = cor_matrix, aes(Var2, Var1, fill = value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(Var2, Var1, label = value), color = "black", size = 3) +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white",
+                       midpoint = 0, limit = c(-1,1), space = "Lab",
+                       name="Pearson\nCorrelation") +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 90, vjust = 1,
+                                   size = 10, hjust = 1))
+rm(num_vars, cor_matrix)
+
+# Remove variables to avoid multicollinearity
+#-------------------------------------------------------------------------------
+rm_vars <- c("stud_year_birth", "hs_grad_yr_nem", "hs_gpa_avg", "hs_attend_med",
+             "hs_grad_age", "hs_pctl_nem", "hs_nem_nem", "promedio_notas",
+             "ptje_ranking")
+all_data[,(rm_vars):=NULL]
+rm(rm_vars)
+```
+
+```{r, eval=FALSE}
+# Analysis of categorical variables
+#-------------------------------------------------------------------------------
+# Check proportions for "jornada"
+round(prop.table(table(all_data$prog_jornada))*100,3)
+all_data[, prog_jornada:= as.character(prog_jornada)]
+df_jornada <- data.frame(
+  old=c("A Distancia", "Diurno", "Otro", "Semipresencial", "Vespertino"),
+  new=c("Other", "Day", "Other", "Other", "Evening"))
+all_data[.(prog_jornada = df_jornada$old, to = df_jornada$new),
+         on = "prog_jornada", prog_jornada := i.to]
+all_data[, prog_jornada:= as.factor(prog_jornada)]
+round(prop.table(table(all_data$prog_jornada))*100,3)
+rm(df_jornada)
+# Remove Programme Area variables
+#-------------------------------------------------------------------------------
+all_data[, prog_area2:= NULL]
+
+# Recode programme Area 3 to avoid categories with only 56 observations
+all_data[, prog_area3:= as.character(prog_area3)]
+all_data$prog_area3[all_data$prog_area3=="Ciencias de la Educacion"] <-
+  "Ciencias Sociales y del Comportamiento"
+all_data[, prog_area3:= as.factor(prog_area3)]
+```
+
+```{r, eval=FALSE}
+# recode response variables
+all_data$dropout <- factor(all_data$dropout, labels=c(0,1))
+all_data$withdraw <- factor(all_data$withdraw, labels=c(0,1))
+all_data$excluded <- factor(all_data$excluded, labels=c(0,1))
+#saveRDS(all_data, file = "2_data/saved_R_objects/10_drop_data_psu.RDS")
+all_data[, change:= NULL]
+
+```
+
+
+
+
+```{r}
+for (i in 2013:2015) {
+  csv_filepath <- paste0(
+    "2_data/data_psu/psu_inscritos/a_inscritos_puntajes_psu_", i, "_priv_mrun.csv.gz")
+  psu_temp <- fread(csv_filepath, sep = ";") #, encoding = "UTF-8"
+  names(psu_temp) <- tolower(names(psu_temp))
+  setnames(psu_temp, old = "año_proceso", new = "ano_proceso")
+  setnames(psu_temp, old = "codigo_enseñanza", new = "codigo_ensenanza")
+  setnames(psu_temp, old = "año_egreso", new = "ano_egreso")
+  assign(paste0("psu_ptj_", i), psu_temp)
+  rm(i, csv_filepath, psu_temp)
+}
+
+############
+
+  if (i == 2007) {
+    matsup_all <- temp_obj
+    }else {
+      setkey(matsup_all, mrun)
+      matsup_all <- merge(matsup_all, temp_obj, by = "mrun", all = TRUE)
+      }
+
+  # bind rows to data
+  nem_data <- rbindlist(list(nem_data, nem_temp), use.names=TRUE)
+  
+#####
+rm(psu_ptj_2008)
+
+cor(psu_ptj_2008$lyc_actual, psu_ptj_2008$mat)
+```
+
+```{r}
+for (i in 2013:2015) {
+  csv_filepath <- paste0(
+    "2_data/data_psu/psu_postulaciones/c_postulaciones_seleccion_psu_", i, "_priv_mrun.csv.gz")
+  psu_temp <- fread(csv_filepath, sep = ";") #, encoding = "UTF-8"
+  names(psu_temp) <- tolower(names(psu_temp))
+  setnames(psu_temp, old = "año_proceso", new = "ano_proceso")
+  setnames(psu_temp, old = "pond_año_acad", new = "pond_ano_acad")
+  assign(paste0("psu_post_", i), psu_temp)
+  rm(i, csv_filepath, psu_temp)
+}
+```
+
+```{r}
+for (i in 2015:2015) {
+  csv_filepath <- paste0(
+    "2_data/data_psu/psu_socioeconomico/b_socioeconomico_domicilio_psu_", i, "_priv_mrun.csv.gz")
+  psu_temp <- fread(csv_filepath, sep = ";") #, encoding = "UTF-8"
+  names(psu_temp) <- tolower(names(psu_temp))
+  setnames(psu_temp, old = "año_proceso", new = "ano_proceso")
+  assign(paste0("psu_nse_", i), psu_temp)
+  rm(i, csv_filepath, psu_temp)
+}
+
+head(psu_nse_2015)
+
+psu_nse_2015
+
+
+```
+
+
+
+
+Los deciles son una forma de clasificar a las familias según su nivel de ingresos, utilizada por el Ministerio de Desarrollo Social en la Encuesta CASEN. Para saber a qué decil pertenece un grupo familiar, se debe calcular el promedio de ingresos considerando la cantidad de personas que conforman ese hogar. Así, el decil 1 representa a la población con la condición socioeconómica más vulnerable, y el decil 10 a las personas de mayores ingresos del país.
+
+Cálculo del Decil: Para obtener tu decil, debes sumar los ingresos de tu grupo familiar, y dividir el resultado por el número de integrantes que lo conforman; con el promedio por persona podrás saber a qué decil perteneces
+
+A continuación, revisa la lista de los deciles para realizar el cálculo (AÑO 2017).
+- 1º decil: desde $0 a $48.750 ingresos por persona
+- 2º decil: $48.751 a $74.969 ingresos por persona 
+- 3º decil: $74.970 a $100.709 ingresos por persona 
+- 4º decil: $100.710 a $125.558 ingresos por persona 
+- 5º decil: $125.559 a $154.166 ingresos por persona 
+- 6º decil: $154.167 a $193.104 ingresos por persona 
+- 7º decil: $193.105 a $250.663 ingresos por persona 
+- 8º decil: $250.664 a $352.743 ingresos por persona 
+- 9º decil: $352.744 a $611.728 ingresos por persona 
+- 10º decil: $611.729 y más
+
+Fuente: Emol.com - https://www.emol.com/noticias/Nacional/2017/10/23/880299/Conoce-a-que-decil-perteneces-para-postular-a-la-gratuidad-y-becas-de-la-educacion-superior.html
+
+```{r}
+all.equal(psu_ptj_2008$mrun, psu_nse_2008$mrun)
+
+head(psu_ptj_2008$mrun, n=30)
+head(psu_nse_2008$mrun, n=30)
+```
+
+```{r, eval=FALSE}
+# Load dropouts data
+dropout_data <- readRDS("2_data/saved_R_objects/02_dropout_data_2009_2018.RDS")
+
+
+prop.table(table(dropout_data$inst_type))
+message("prop de datos por año que estan en las bases psu")
+prop.table(table(dropout_data$year_1st_data, dropout_data$mrun %in% psu_data$mrun),1)
+message("prop de datos por tipo de institucion (entre 2009 y 2015) que estan en las bases psu")
+prop.table(table(dropout_data$inst_type[dropout_data$year_1st_data<2016],
+                 dropout_data$mrun[dropout_data$year_1st_data<2016] %in% psu_data$mrun),1)
+message("prop de datos por desercion (entre 2009 y 2015) que estan en las bases psu")
+prop.table(table(dropout_data$withdraw[dropout_data$year_1st_data<2016],
+                 dropout_data$mrun[dropout_data$year_1st_data<2016] %in% psu_data$mrun),1)
+
+```
+
+    ################################################################################
+    ################################################################################
+    OLD
+    ################################################################################
+    ################################################################################
+    
+
+################################################################################
+### THE END
+################################################################################

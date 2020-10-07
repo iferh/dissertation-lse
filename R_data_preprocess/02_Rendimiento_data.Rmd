@@ -1,0 +1,493 @@
+---
+title: "Get Performance data of each student"
+output: html_notebook
+---
+
+The “Rendimiento” databases contain information on the performance of each student in primary and secondary school, including data on grade point average and percentage of attendance.
+
+################################################################################
+### 1. Load data and packages
+
+```{r, message=FALSE, warning=FALSE}
+# Load packages
+library(data.table)
+library(tidyverse)
+```
+
+```{r, eval=FALSE}
+# Load dropouts data
+dropout_data <- readRDS("2_data/saved_R_objects/02_dropout_data_2009_2018.RDS")
+```
+
+**DO NOT RUN THIS**
+```{r, eval=FALSE}
+# Changes to Performance 2014 dataset
+#-------------------------------------------------------------------------------
+# create file path
+csv_filepath <- paste0("2_data/data_rendimiento/rendimiento_2014_publ_original.csv.gz")
+# read csv from compressed file
+rendim_2014_original <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+# changing variable name to match other years
+names(rendim_2014_original)[31] <- "SIT_FIN_R"
+# save base with changes
+write_csv2(rendim_2014_original,"2_data/data_rendimiento/rendimiento_2014_publ.csv")
+# removing object matsup_2019_origin
+rm(rendim_2014_original)
+```
+
+################################################################################
+### 2. Import Performance datasets
+
+The databases are filtered keeping only cases with `MRUN` contained in the `Enrolment in Higher Education` databases. This filters out a total of 354,062 students enrolled in Higher education that are not present in the Performance databases. Approximately 95% of these filtered students have dates of birth before 1984, which is 18 years before the first Performance database. This implies that the students are not in the database because they had already finished their secondary education.
+
+**DO NOT RUN THIS**
+```{r, eval=FALSE}
+# Import Performance dataset year by year
+#-------------------------------------------------------------------------------
+ImportRendimOne <- function(i) {
+  # Vector of grades equivalent to 7th or 8th grade
+  sept_octavo <- c('110-7', '110-8', '160-4', '160-5', '161-4', '161-5',
+                   '163-4', '163-5', '165-3', '167-3')
+  # create file path
+  csv_filepath <- paste0("2_data/data_rendimiento/rendimiento_",i, "_publ.csv.gz")
+  # read csv from compressed file
+  temp_obj <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+  # variable names to lowercase
+  names(temp_obj) <- tolower(names(temp_obj))
+  # remove cases not enroled in higher education (from ed.superior databases)
+  temp_obj <- temp_obj[temp_obj$mrun %in% dropout_data$mrun]
+  # Import only cases from 7th grade onward
+  cod_ense_grado <- paste(temp_obj$cod_ense, temp_obj$cod_grado, sep = "-")
+  temp_obj <- temp_obj[cod_ense_grado %in% sept_octavo | cod_ense > 300]
+  # remove cases with situation "retirado" or "trasladado"
+  temp_obj <- temp_obj[temp_obj$sit_fin_r == "P" | temp_obj$sit_fin_r == "R"]
+  # order cases by "sit_fin" (so approved cases are first) and "asistencia"
+  temp_obj <- temp_obj[order(temp_obj$sit_fin_r, -temp_obj$asistencia)]
+  # remove duplicated mrun
+  temp_obj <- temp_obj[!duplicated(temp_obj$mrun)]
+  # change decimal separator from "," to "."
+  temp_obj$prom_gral <- as.numeric(gsub(",", ".", temp_obj$prom_gral))
+  return(temp_obj)
+}
+# Import data "rendimiento" one year
+rendim_2019 <- ImportRendimOne(2019)
+#head(rendim_2007, n=10)
+rm(ImportRendimOne)
+```
+
+```{r, eval=FALSE}
+# Import Performance databases from 2002 to 2019
+#-------------------------------------------------------------------------------
+ImportRendimAll <- function() {
+  # Vector to select variables to keep
+  vars_keep <- c("mrun", "rbd", "gen_alu", "fec_nac_alu", "cod_com_alu",
+                 "cod_ense", "cod_grado", "prom_gral", "asistencia", "sit_fin")
+  # Vector of grades equivalent to 7th or 8th grade
+  sept_octavo <- c('110-7', '110-8', '160-4', '160-5', '161-4', '161-5',
+                   '163-4', '163-5', '165-3', '167-3')
+  # Loop to import and merge data
+  for (i in 2002:2019) {
+    # create file path
+    csv_filepath <- paste0("2_data/data_rendimiento/rendimiento_",i, "_publ.csv.gz")
+    # read csv from compressed file
+    temp_obj <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+    # variable names to lowercase
+    names(temp_obj) <- tolower(names(temp_obj))
+    # remove cases not enroled in higher education (from ed.superior databases)
+    temp_obj <- temp_obj[temp_obj$mrun %in% dropout_data$mrun]
+    # Import only cases from 7th grade onward
+    cod_ense_grado <- paste(temp_obj$cod_ense, temp_obj$cod_grado, sep = "-")
+    temp_obj <- temp_obj[cod_ense_grado %in% sept_octavo | cod_ense > 300]
+    # remove cases with situation "retirado" or "trasladado"
+    temp_obj <- temp_obj[temp_obj$sit_fin_r == "P" | temp_obj$sit_fin_r == "R"]
+    # order cases by "sit_fin" (so approved cases are first) and "asistencia"
+    temp_obj <- temp_obj[order(temp_obj$sit_fin_r, -temp_obj$asistencia)]
+    # remove duplicated mrun
+    temp_obj <- temp_obj[!duplicated(temp_obj$mrun)]
+    # change decimal separator from "," to "."
+    temp_obj$prom_gral <- as.numeric(gsub(",", ".", temp_obj$prom_gral))
+    # select variables to keep
+    temp_obj <- temp_obj[, ..vars_keep]
+    # change names of variables (except mrun) to include year (e.g. "_2007")
+    names(temp_obj) <- c("mrun", paste0(names(temp_obj[,2:length(temp_obj)]), "_", i))
+    # merge all the datasets into one
+    if (i == 2002) {
+      rendim_all <- temp_obj
+      }else {
+        setkey(rendim_all, mrun)
+        rendim_all <- merge(rendim_all, temp_obj, by = "mrun", all = TRUE)
+      }
+    }
+  return(rendim_all)
+  }
+# Import data "rendimiento" 2002-2019
+rendim_all <- ImportRendimAll()
+rm(ImportRendimAll)
+# Save Object
+saveRDS(rendim_all, file = "2_data/saved_R_objects/03_rendim_2002_2019.RDS")
+```
+
+################################################################################
+### 3. Merge databases
+
+```{r}
+# Load data and Merge into single DT
+#-------------------------------------------------------------------------------
+# Load dropout data and modify variables
+dropout_data <- readRDS("2_data/saved_R_objects/02_dropout_data_2009_2018.RDS")
+# Load performance data
+rendim_all <- readRDS("2_data/saved_R_objects/03_rendim_2002_2019.RDS")
+# Set keys
+data.table::setkey(rendim_all, mrun)
+data.table::setkey(dropout_data, mrun)
+# Merge Dropout Data and Performance Data
+drop_dt <- merge(rendim_all, dropout_data, by = "mrun", all.x = TRUE)
+rm(dropout_data, rendim_all)
+```
+
+################################################################################
+### 4. Make functions to obtain data
+
+```{r}
+# Make functions to obtain data
+#-------------------------------------------------------------------------------
+# function to get the year a student graduates from highschool
+GetLastYear <- function(x) {
+  max(c(2002:2019)[!is.na(x)])
+  }
+# function to get data from the year a student graduates from highschool
+GetLastData <- function(x) {
+  datalast = ifelse(all(is.na(x)), NA, x[max(which(!is.na(x)))])
+  return(datalast)
+  }
+# function to get data from the first year with data
+GetFirstData <- function(x) {
+  datafirst = ifelse(all(is.na(x)), NA, x[min(which(!is.na(x)))])
+  return(datafirst)
+  }
+# function to get the Average ignoring NA
+GetAverage <- function(x){
+  x = replace(x, which(x==0), NA)
+  return(mean(x, na.rm = TRUE))
+  }
+# function to get the Median ignoring NA
+GetMedian <- function(x){
+  x = replace(x, which(x==0), NA)
+  return(median(x, na.rm = TRUE))
+  }
+# function to get the number of unique data in period
+GetNumUniq <- function(x) {
+  length(unique(x[!is.na(x)]))
+  }
+# function to get the most common data in period
+GetMostCommon <- function(x) {
+  names(which.max(table(x[!is.na(x)])))
+  }
+# function to get the number of years failed in high school
+GetNumFail <- function(x) {
+  sum(x[!is.na(x)]=="R")
+  }
+# function to get the years a student is not enroled in school before finishing
+GetNumOut <- function(x) {
+  notna = !is.na(x)
+  index_fst = min(c(1:18)[notna])
+  index_lst = max(c(1:18)[notna])
+  yrs_out = sum(is.na(x[index_fst:index_lst]))
+  return(yrs_out)
+  }
+```
+
+################################################################################
+### 5. Get High-school Performance data for each student
+
+```{r}
+# Get highschool data for each student
+#-------------------------------------------------------------------------------
+# Making vector of RBD to subset columns
+rbd_vec <- paste0("rbd_", 2002:2019)
+# Add variable with the RBD of the last year for each student
+drop_dt$hs_rbd <- apply(drop_dt[,..rbd_vec], 1, GetLastData)
+# Add variable with the year each student graduates from highschool
+drop_dt$hs_grad_year <- apply(drop_dt[,..rbd_vec], 1, GetLastYear)
+# Making vector of "cod_ense" to subset columns
+cod_ense_vec <- paste0("cod_ense_", 2002:2019)
+# Adding variables with the last and first cod_ense for each student
+drop_dt$hs_cod_ense <- apply(drop_dt[,..cod_ense_vec], 1, GetLastData)
+drop_dt$hs_cod_ense_1st <- apply(drop_dt[,..cod_ense_vec], 1, GetFirstData)
+# Making vector of "cod_grado" to subset columns
+cod_grado_vec <- paste0("cod_grado_", 2002:2019)
+# Adding variables with last and first cod_grado for each student
+drop_dt$hs_cod_grado <- apply(drop_dt[,..cod_grado_vec], 1, GetLastData)
+drop_dt$hs_cod_grado_1st <- apply(drop_dt[,..cod_grado_vec], 1, GetFirstData)
+# Remove vectors
+rm(rbd_vec, cod_ense_vec, cod_grado_vec)
+```
+
+```{r}
+# Analysis of trajectory in highschool
+#-------------------------------------------------------------------------------
+# Table of years of graduation vs Year of enrolment in higher education
+round(prop.table(table("HighEd"=drop_dt$year_1st_data,
+                       "School"=drop_dt$hs_grad_year),1)*100,1)
+```
+
+```{r}
+# Get performance data for each student
+#-------------------------------------------------------------------------------
+# Make vector of "prom_gral" to subset columns
+prom_gral_vec <- paste0("prom_gral_", 2002:2019)
+# Changing GPA 0 to NA
+drop_dt[, (prom_gral_vec):= lapply(.SD, function(x) replace(x, which(x==0), NA)), .SDcols = prom_gral_vec]
+# Add variable with the Average of the GPA of highschool for each student
+drop_dt$hs_gpa_avg <- apply(drop_dt[,..prom_gral_vec], 1, GetAverage)
+# Make vector of "asistencia" to subset columns
+asistencia_vec <- paste0("asistencia_", 2002:2019)
+# Determine number of cases with attendance > 100 for each year
+#drop_dt[ , apply(.SD, 2, function(x) sum(x>100, na.rm = TRUE)), .SDcols = asistencia_vec]
+# Fix 16 cases of students with attendance over 100
+error_cases <- drop_dt$asistencia_2009>100 & !is.na(drop_dt$asistencia_2009)
+error_attend <- drop_dt$asistencia_2009[error_cases]/10
+drop_dt$asistencia_2009[error_cases] <- round(error_attend,0)
+rm(error_attend, error_cases)
+# Changing Attendance 0 to NA
+drop_dt[, (asistencia_vec):= lapply(.SD, function(x) replace(x, which(x==0), NA)), .SDcols = asistencia_vec]
+# Add variable with the Average attendance of highschool for each student
+drop_dt$hs_attend_avg <- apply(drop_dt[,..asistencia_vec], 1, GetAverage)
+# Add variable with the Median attendance of highschool for each student
+drop_dt$hs_attend_med <- apply(drop_dt[,..asistencia_vec], 1, GetMedian)
+# Make vector of "sit_fin" to subset columns
+sit_fin_vec <- paste0("sit_fin_", 2002:2019)
+# Add variable number of failed levels in highschool for each student
+drop_dt$hs_fail_years <- apply(drop_dt[,..sit_fin_vec], 1, GetNumFail)
+# Making vector of RBD to subset columns
+rbd_vec <- paste0("rbd_", 2002:2019)
+# Add variable of number of years out of the system before finishing
+drop_dt$hs_years_out <- apply(drop_dt[,..rbd_vec], 1, GetNumOut)
+# Remove vectors
+rm(prom_gral_vec, asistencia_vec, sit_fin_vec, rbd_vec)
+# Recoding education type variable
+drop_dt <- drop_dt %>% mutate(
+  hs_ed_type = case_when(
+      hs_cod_ense == 310 ~ "Regular",
+      hs_cod_ense == 410 ~ "Vocational",
+      hs_cod_ense == 510 ~ "Vocational",
+      hs_cod_ense == 610 ~ "Vocational",
+      hs_cod_ense == 710 ~ "Vocational",
+      hs_cod_ense == 810 ~ "Vocational",
+      hs_cod_ense == 910 ~ "Vocational",
+      hs_cod_ense < 400 ~ "Adult Regular",
+      hs_cod_ense < 999 ~ "Adult Vocational"))
+# Make factor from education type
+drop_dt$hs_ed_type <- as.factor(drop_dt$hs_ed_type)
+drop_dt$hs_ed_type <- relevel(drop_dt$hs_ed_type, ref = 3) # Reference: Regular
+# Back to data.table
+drop_dt <- data.table(drop_dt)
+```
+
+```{r}
+# Determine how many years of data are available for each student
+#-------------------------------------------------------------------------------
+rbd_vec <- paste0("rbd_", 2002:2019)
+drop_dt$num_yrs_data <- apply(drop_dt[,..rbd_vec], 1, function(x) sum(!is.na(x)))
+message("Cases by number years with data in databases")
+cbind(perc=round(prop.table(table(drop_dt$num_yrs_data))*100,1), num=table(drop_dt$num_yrs_data))
+rm(rbd_vec)
+```
+
+################################################################################
+### 6. Retrieve High School-level data
+
+```{r}
+# Retrieve data from databases High School 
+#-------------------------------------------------------------------------------
+ee_filepath <- paste0("2_data/data_establecimientos/directorio_oficial_ee_2019_20190430_publ.csv.gz")
+# read csv from compressed file
+ee_2019 <- fread(ee_filepath, sep = ";", encoding = "UTF-8")
+# change variables to lower
+names(ee_2019) <- tolower(names(ee_2019))
+# recode variable of school control
+ee_2019 <- ee_2019 %>%
+    mutate(hs_control = case_when(
+      cod_depe == 1 ~ "Public",
+      cod_depe == 2 ~ "Public",
+      cod_depe == 3 ~ "Charter",
+      cod_depe == 4 ~ "Private",
+      cod_depe == 5 ~ "CAD",
+      cod_depe == 6 ~ "Public"))
+# Make factor from hs_control
+ee_2019$schl_control <- as.factor(ee_2019$hs_control)
+# subset useful variables
+ee_2019 <- ee_2019[, c("rbd", "cod_reg_rbd", "cod_com_rbd", "hs_control", "rural_rbd", "convenio_pie")]
+# rename rbd to merge 
+ee_2019 <- ee_2019 %>% rename(hs_rbd = rbd, hs_cod_reg = cod_reg_rbd, hs_cod_com = cod_com_rbd,
+                              hs_rural = rural_rbd, hs_pie = convenio_pie)
+# merge with "rendimiento" database
+setkey(drop_dt, hs_rbd)
+drop_dt <- merge(drop_dt, ee_2019, by = "hs_rbd", x.all = TRUE)
+# Transform to factor High School-level variables
+drop_dt$hs_control <- as.factor(drop_dt$hs_control)
+drop_dt$hs_control <- relevel(drop_dt$hs_control, ref = 4) # Reference: Public
+drop_dt$hs_rural <- as.factor(drop_dt$hs_rural)
+drop_dt$hs_pie <- as.factor(drop_dt$hs_pie)
+rm(ee_2019, ee_filepath)
+```
+
+
+################################################################################
+### 7. Retrieve student-level data and check consistency across sources
+
+```{r}
+# Get data of students' gender from Performance Databases
+#-------------------------------------------------------------------------------
+# Create vector with columns names
+gen_alu_vec <- paste0("gen_alu_", 2002:2019)
+# Get gender in last year of highschool
+stud_gender <- drop_dt[ , apply(.SD, 1, GetLastData), .SDcols = gen_alu_vec]
+# Get number of genders in data for each student
+gend_number <- drop_dt[ , apply(.SD, 1, GetNumUniq), .SDcols = gen_alu_vec]
+# Get most common gender in data for students
+stud_gend_max <- drop_dt[which(gend_number>1), apply(.SD, 1, GetMostCommon), .SDcols = gen_alu_vec]
+stud_gender[gend_number>1] <- stud_gend_max
+# Make new column for data with most common gender
+drop_dt[, stud_gend2 := stud_gender]
+drop_dt$stud_gend2[drop_dt$stud_gend2=="1"] <- "male"
+drop_dt$stud_gend2[drop_dt$stud_gend2=="2"] <- "female"
+drop_dt$stud_gend2 <- as.factor(drop_dt$stud_gend2)
+rm(stud_gender, gend_number, stud_gend_max)
+# Tables of proportion of inconsistent cases
+message("Same gender in dropout data and performance data")
+cbind("prop"=round(prop.table(table(drop_dt$stud_gend==drop_dt$stud_gend2, useNA = "ifany")),3),
+      "num"=table(drop_dt$stud_gend==drop_dt$stud_gend2, useNA = "ifany"))
+# Remove unnecesary columns
+rm(gen_alu_vec)
+```
+
+```{r}
+# Get  data of students' date of birth from Performance Databases
+#-------------------------------------------------------------------------------
+# Transform variables dob 2002 to same format as other years
+drop_dt$fec_nac_alu_2002 <- as.Date(drop_dt$fec_nac_alu_2002, "%b %d %Y")
+drop_dt$fec_nac_alu_2002 <- format(drop_dt$fec_nac_alu_2002,"%Y%m%d")
+drop_dt$fec_nac_alu_2002 <- as.integer(drop_dt$fec_nac_alu_2002)
+# Create vector with columns names
+fec_nac_alu_vec <- paste0("fec_nac_alu_", 2002:2019)
+# Get dob in last year of highschool
+stud_dob <- drop_dt[ , apply(.SD, 1, GetLastData), .SDcols = fec_nac_alu_vec]
+# Get number of dob in data for each student
+dob_number <- drop_dt[ , apply(.SD, 1, GetNumUniq), .SDcols = fec_nac_alu_vec]
+# Get most common dob in data for students
+stud_dob_max <- drop_dt[which(dob_number>1), apply(.SD, 1, GetMostCommon), .SDcols = fec_nac_alu_vec]
+stud_dob[dob_number>1] <- stud_dob_max
+rm(stud_dob_max)
+# Make new column for data with most common dob
+drop_dt[, stud_date_birth2 := as.Date(stud_dob, "%Y%m%d")]
+drop_dt[, stud_year_birth2 := as.numeric(format(drop_dt$stud_date_birth2, "%Y"))]
+drop_dt[, stud_dob_consist_perf := dob_number]
+rm(stud_dob, dob_number, fec_nac_alu_vec)
+# Tables of proportion of inconsistent cases
+message("Same year of birth in dropout data and performance data")
+cbind("prop"=round(prop.table(table(drop_dt$stud_year_birth==drop_dt$stud_year_birth2, useNA = "ifany")),3),
+      "num"=table(drop_dt$stud_year_birth==drop_dt$stud_year_birth2, useNA = "ifany"))
+# Paste DOB data from Performance data to NA cases in Higher Ed. Data
+drop_dt$stud_date_birth[is.na(drop_dt$stud_date_birth)] <- drop_dt$stud_date_birth2[is.na(drop_dt$stud_date_birth)]
+drop_dt[, stud_year_birth := as.numeric(format(drop_dt$stud_date_birth, "%Y"))]
+
+# Get  data based on students' date of birth
+#-------------------------------------------------------------------------------
+# Make variable of age at last year of high school
+drop_dt$hs_grad_age <- drop_dt$hs_grad_year-drop_dt$stud_year_birth
+# Make variable of age of enrolment in higher education
+drop_dt$enrol_he_age <- drop_dt$year_1st_data-drop_dt$stud_year_birth
+# Gap of years between graduation from highschool and enrolment in higher education
+drop_dt$enrol_gap <- drop_dt$year_1st_data-drop_dt$hs_grad_year
+# Table of distribution of data by source
+yob_breaks <- c(1800,1900,1950,1960,1970,1980,1990,2000,2010)
+yob_labels <- c("1800-1900","1900-1950","1950-1960","1960-1970","1970-1980",
+                "1980-1990","1990-2000","2000-2010")
+message("Year of birth by source of data")
+cbind("Higher Ed. Data"=table(cut(drop_dt$stud_year_birth, yob_breaks, labels = yob_labels), useNA = "always"),
+  "Performance Data"=table(cut(drop_dt$stud_year_birth2, yob_breaks, labels = yob_labels), useNA = "always"))
+rm(yob_breaks, yob_labels)
+```
+
+```{r}
+# Get  data of students' Comuna from Performance Databases
+#-------------------------------------------------------------------------------
+# Create vector with columns names
+cod_com_alu_vec <- paste0("cod_com_alu_", 2002:2019)
+# Get comuna from last year of highschool
+stud_comuna <- drop_dt[ , apply(.SD, 1, GetLastData), .SDcols = cod_com_alu_vec]
+# Get number of unique comunas in data for each student
+comuna_num <- drop_dt[ , apply(.SD, 1, GetNumUniq), .SDcols = cod_com_alu_vec]
+# Get most common comuna in data for students
+stud_comuna_max <- drop_dt[which(comuna_num>1), apply(.SD, 1, GetMostCommon), .SDcols = cod_com_alu_vec]
+stud_comuna[comuna_num>1] <- stud_comuna_max
+# Make new column for data with most common comuna
+drop_dt[, stud_comuna_num := comuna_num]
+drop_dt[, stud_comuna := stud_comuna]
+drop_dt$stud_comuna <- as.factor(drop_dt$stud_comuna)
+rm(cod_com_alu_vec, stud_comuna, stud_comuna_max, comuna_num)
+```
+
+################################################################################
+### 8. Change classes of variables
+
+```{r}
+setnames(drop_dt, old = "year_1st_data", new = "enrol_year")
+drop_dt$inst_cruch <- factor(drop_dt$inst_cruch, levels = c(0, 1), labels = c("Not-cruch", "Cruch"))
+drop_dt$hs_rural <- factor(drop_dt$hs_rural, levels = c(0, 1), labels = c("Urban", "Rural"))
+drop_dt$hs_pie <- factor(drop_dt$hs_pie, levels = c(0, 1), labels = c("Not-PIE", "PIE"))
+drop_dt$hs_rbd <- as.factor(drop_dt$hs_rbd)
+drop_dt$hs_cod_ense <- as.factor(drop_dt$hs_cod_ense)
+drop_dt$hs_cod_reg <- as.factor(drop_dt$hs_cod_reg)
+drop_dt$hs_cod_com <- as.factor(drop_dt$hs_cod_com)
+drop_dt$enrol_he_age <- as.integer(drop_dt$enrol_he_age)
+drop_dt$stud_year_birth <- as.integer(drop_dt$stud_year_birth)
+```
+
+################################################################################
+### 9. Save data
+
+```{r}
+# Set order and subset data
+#-------------------------------------------------------------------------------
+# rename program length and plan
+setnames(drop_dt, old = "progr_len", new = "prog_len")
+setnames(drop_dt, old = "progr_plan", new = "prog_plan")
+# set order and subset
+keep_vars <- c(
+  # Students' characteristics
+  "mrun", "stud_comuna",
+  "stud_gend", "stud_gend2", "stud_date_birth", "stud_year_birth",
+  "stud_date_birth2", "stud_year_birth2",
+  # Quality control of student data
+  "num_yrs_data", "stud_comuna_num", "stud_gend_consist", 
+  "stud_dob_consist", "stud_dob_consist_perf",
+  # Trajectory in Higher Education
+  "enrol_year", "year_ori_enrol", "enrol_he_age", "enrol_gap", "num_uniq_prog",
+  "dropout", "excluded", "change", "drop_change", "withdraw",
+  # Higher Education Institution characteristics
+  "inst_code", "inst_type", "inst_control", "inst_cruch", "inst_accred",
+  # Higher Education Programme characteristics
+  "prog_code", "prog_code_2nd", "prog_name", "prog_jornada", "prog_level",
+  "prog_tuition", "prog_enrol_fee", "prog_accredit", "prog_plan", "prog_len",
+  "prog_area1", "prog_area2", "prog_area3",
+  # Trajectory in highschool
+  "hs_grad_year", "hs_cod_ense", "hs_cod_grado", "hs_cod_ense_1st",
+  "hs_cod_grado_1st",
+  # High school characteristics
+  "hs_rbd", "hs_ed_type", "hs_cod_reg", "hs_cod_com", "hs_control", "hs_rural",
+  "hs_pie",
+  # Students' Performance in highschool
+  "hs_gpa_avg", "hs_attend_avg", "hs_attend_med", "hs_fail_years", "hs_years_out",
+  "hs_grad_age"
+  )
+setcolorder(drop_dt, keep_vars)
+drop_dt <- drop_dt[, keep_vars, with = FALSE]
+rm(keep_vars)
+```
+
+```{r}
+# Save Object
+saveRDS(drop_dt, file = "2_data/saved_R_objects/04_dropout_rendim_data_2009_2018.RDS")
+```

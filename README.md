@@ -1,7 +1,7 @@
-# Dissertation: Assessing balanced approaches to predict student dropout in Chile
+## Dissertation: Assessing balanced approaches to predict student dropout in Chile
 This repository contains the code used for my Dissertation for the MSc Applied Social Data Science at LSE. The data pre-process, including cleaning and creating the final database was done using R. The balancing methods and machine models were created using Python.
 
-## Abstract
+## Project Abstract
 Student attrition in higher education is a multidimensional problem that carries negative repercussions for individuals, institutions and society. Predictive models focused on identifying students at risk of dropping out can assist institutions in developing interventions to improve retention rates.
 
 Class imbalanced data is an inherent problem in the prediction of attrition that may cause significant loss of performance in classification tasks. Not addressing this problem in the prediction of attrition can lead to overly optimistic results while achieving a poor performance on the classification of the minority class.

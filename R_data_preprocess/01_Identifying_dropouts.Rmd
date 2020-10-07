@@ -1,0 +1,609 @@
+---
+title: "Pre-processing and identifying dropouts"
+output: html_notebook
+---
+
+## Pre-processing Databases of Enrolment in Higher Ed. & identifying dropouts
+
+This Notebook contains the pre-processing done of the enrolment in higher education databases from 2007 to 2019. These databases are used to identify the students who dropout and change to another programme after the first year on enrolment, and to extract the characteristics of the students, institutions and programmes.
+
+################################################################################
+### Load Packages
+
+```{r, message=FALSE, warning=FALSE}
+library(data.table)
+library(tidyverse)
+```
+
+################################################################################
+### 1. Changes to the original 2019 database
+
+The enrolment database for 2019 has different variable names for some columns and the names are in uppercase. This code changes some of these differences and saves a new database. The original database is named `matricula_ed_superior_2019_original` and the new database is named `matricula_ed_superior_2019`.
+
+*DO NOT RUN THIS*
+```{r, eval=FALSE}
+# Changes to 2019 database
+#-------------------------------------------------------------------------------
+matsup_2019_original <- fread(
+                      "2_data/data_mat_edsup/matricula_ed_superior_2019_original.csv.gz",
+                      sep = ";", encoding = "UTF-8", stringsAsFactors = FALSE)
+# transforming variable names for mat_sup_2019 to lowercase
+names(matsup_2019_original) <- tolower(names(matsup_2019_original))
+# changing variable names names for mat_sup_2019 to match other years
+names(matsup_2019_original)[7] <- "anio_mat_pri_anio"
+names(matsup_2019_original)[8] <- "sem_mat_pri_anio"
+names(matsup_2019_original)[9] <- "anio_ing_carrera"
+names(matsup_2019_original)[10] <- "sem_ing_carrera"
+# saving base with changes
+write_csv2(matsup_2019_original,"2_data/data_mat_edsup/matricula_ed_superior_2019.csv")
+# removing object matsup_2019_origin
+rm(matsup_2019_original)
+```
+
+################################################################################
+### 2. Import enrolment data
+
+To identify dropout students, all dataset of enrolment in Higher Education are imported into a single dataset. The data is merged using the MRUN as key variable to obtain the trajectory of each student in higher education.
+
+Enrolment Datasets from 2007 to 2019 are imported and merged into a single DataTable.
+  - Some variables are selected to keep, discarding variables that will not be used in the analysis
+  - Postgraduate observations are dropped
+  - Observations without MRUN are also dropped
+  - A variable with a unique code for each programme is generated using `codigo_unico` and removing the code for `sede`, `jornada` and `version`.
+
+The following varaibles were removed from the selection:
+ - `anio_mat_pri_anio` Año de ingreso a primer año corresponde al año en que el estudiante se matricula al primer año de estudios de la carrera en que se encuentra actualmente, o la carrera o programa que de forma natural tiene continuidad en la carrera actual
+ - `anio_ing_carrera` Año de ingreso a la carrera corresponde al año en que el estudiante ingresó a la carrera o programa en que se encuentra actualmente  matriculado,  sin  importar  el  semestre  o  nivel  a  que  ingresó  dentro  del  plan  de  estudios,  ni  si  anteriormente cursó una carrera o programa que de forma natural tiene continuidad en la carrera actual
+ 
+The dataset is subsetted removing cases whose first year with available data is 2007. The reasoning behind this is that it's no possible to know if a student was enrolled in higher education prior to that year, and therefore imposible to determine if is dropping out after the first year. Cases whose first appereance is 2007 seem to be highly inconsistent, with MRUN that repeat up to 450k times (MRUN `7085589``appears 458,752 times in the base).
+
+##### 2.1 Select variables to import
+```{r, eval=FALSE}
+# Selecting varibles to keep frmo each Dataset
+#-------------------------------------------------------------------------------
+vars_keep <- c(
+  "mrun",
+  "gen_alu",
+  "fec_nac_alu",
+  "anio_mat_pri_anio",
+  #"anio_ing_carrera",
+  "cod_inst",
+  "tipo_inst_3",
+  "cod_carr",
+  "nomb_carrera",
+  "jornada",
+  "tipo_plan_carr",
+  "dur_total_carr",
+  "region_sede",
+  "comuna_sede",
+  "nivel_carrera_2",
+  "valor_arancel",
+  "valor_matricula",
+  "area_conocimiento",
+  "oecd_area",
+  "oecd_subarea",
+  "acreditada_carr",
+  "acreditada_inst"
+  )
+```
+
+##### 2.2 Import all enrolment datasets into a single DataTable
+```{r, eval=FALSE}
+# Import all datasets into a single datatable
+#-------------------------------------------------------------------------------
+ImportMatsupAll <- function() {
+  # Loop to import and merge data
+  for (i in 2007:2019) {
+    # make path to get CSV file
+    csv_filepath <- paste0("2_data/data_mat_edsup/matricula_ed_superior_",i, ".csv.gz")
+    # read CSV files into data.table
+    temp_obj <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+    # remove rows with NA in mrun and postgraduate students
+    temp_obj <- temp_obj[nivel_global == "Pregrado" & complete.cases(temp_obj$mrun)]
+    # Using regex to remove code for `sede`, `jornada` and `version` from `codigo_unico`
+    temp_obj$cod_carr <- gsub('(J)(.*)','', gsub('(S)([0-9]*)','', temp_obj$codigo_unico))
+    # select variables to keep
+    temp_obj <- temp_obj[, ..vars_keep]
+    # variable with number of programmes enroled in the same year
+    temp_obj[, num_prog_yr:=.N, by = mrun]
+    # change names of variables (except mrun) to include year (e.g. "_2007")
+    names(temp_obj) <- c("mrun", paste0(names(temp_obj[,2:length(temp_obj)]), "_", i))
+    # merge all the datasets into one
+    if (i == 2007) {
+      matsup_all <- temp_obj
+      }else {
+        setkey(matsup_all, mrun)
+        matsup_all <- merge(matsup_all, temp_obj, by = "mrun", all = TRUE)
+      }
+    }
+  return(matsup_all)
+  }
+# Run function
+matsup_allvars <- ImportMatsupAll()
+rm(vars_keep, ImportMatsupAll)
+```
+
+##### 2.3 Alternative functions to import enrolment datasets
+*DO NOT RUN THIS*
+```{r, eval=FALSE}
+# Import one dataset into a datatable
+#-------------------------------------------------------------------------------
+ImportMatsupOne  <- function(i) {
+  csv_filepath <- paste0("2_data/data_mat_edsup/matricula_ed_superior_",i, ".csv.gz")
+  temp_obj <- fread(csv_filepath, sep = ";", encoding = "UTF-8")
+  temp_obj <- temp_obj[nivel_global == "Pregrado" & complete.cases(temp_obj$mrun)]
+  temp_obj$cod_carr <- gsub('(J)(.*)','', gsub('(S)([0-9]*)','', temp_obj$codigo_unico))
+  return(temp_obj)
+  }
+```
+
+##### 2.4 Identify first year with data available and remove cases from 2007 (or before)
+```{r, eval=FALSE}
+# Identify first year with data available
+#-------------------------------------------------------------------------------
+# Create function to identify first year data
+GetYearOne <- function(x) {min(c(2007:2019)[!is.na(x)])}
+# Run function
+cod_carr_vec <- paste0("cod_carr_", 2007:2019)
+matsup_allvars$year_1st_data <- apply(matsup_allvars[,..cod_carr_vec], 1, GetYearOne)
+# Remove cases with first data from 2007
+matsup_allvars <- matsup_allvars[matsup_allvars$year_1st_data > 2007]
+# Remove objects
+rm(GetYearOne, cod_carr_vec)
+
+# Identify first year of enrolment
+#-------------------------------------------------------------------------------
+Get1stData <- function(x) {
+  data1st = ifelse(all(is.na(x)), NA, x[min(which(!is.na(x)))])
+  return(data1st)}
+# Run function
+anio_mat_vec <- paste0("anio_mat_pri_anio_", 2007:2019)
+matsup_allvars$year_ori_enrol <- matsup_allvars[ , apply(.SD, 1, Get1stData),
+                                                 .SDcols = anio_mat_vec]
+rm(Get1stData, anio_mat_vec)
+table(matsup_allvars$year_ori_enrol)
+# Save Object
+saveRDS(matsup_allvars, file = "2_data/saved_R_objects/01_matsup_2007_2019.RDS")
+rm(matsup_allvars)
+```
+
+################################################################################
+## 3. Identify Dropout students
+
+##### 3.1 Definition of Dropout and its types
+
+Dropouts are identified using the conceptualization of first year attrition, as defined by National Education Council of Chile: *"…all freshmen students that do not continue in the same program and institution the following year from their first year of enrolment in higher education."*
+
+The analysis considers only "First year Dropout". This includes students who are enrolled in a programme in a given year as first-year students, that do not continue to be enrolled in the same institution and in the same programme the following year.
+
+The analysis differentiates between multiple types of dropout. The following subgroups are considered:
+- Dropout: Students who drop out of their programme as first-year students, and that do not continue to be enrolled in the same programme the following year.
+- Withdraw: Students who drop out of their programme as first-year students, and that are not enrolled in any programme the following year.
+- Change: Students who drop out of their programme as first-year students, and that enrol in another programme the following year.
+- Excluded: Students who drop out of their programme as first-year students and are not enrolled in any programme for the two following years.
+
+##### 3.2 Razonamiento detrás de decisiones
+
+*1.- Se decide identificar sólo a los estudiantes que desertan en 1er año como indicador de deserción.* Esto se debe a que no es posible identificar de manera certera si un estudiante completó sus estudios en los años en que estuvo matriculado. A pesar de que las carreras tienen una variable que indica los semestres de duración, algunos estudiantes pueden haber completado sus estudios en menor tiempo habiendo convalidado o tomado más ramos. Una opción que que parecía prometedora para identificar a los estudiantes que terminan sus estudios era buscar su MRUN en las bases de titulados en educación superior. Sin embargo, algunos estudiantes pueden haber terminado los ramos cursados sin haber conseguido el título, o pueden terminar su proceso de titulación varios años después de terminar su carrera.
+
+*idea:* Probablemente existen diferencias importantes entre aquellos estudiantes que desertan porque se decepcionan de la carrera que han escogido, y aquellos que tienen problemas académicos y no pueden mantener sus estudios. Para visualizar estas diferencias se podría hacer una variable que indique si el estudiante se cambió a otra carrera de un año a otro, o simplemente no está matriculado en nada al año siguiente.
+
+*Cambios de carrera* Un problema para identificar a los estudiantes que cambian de carrera de un año a otro es que la variable `codigo_unico`, la cual entrega el Código único de carrerao programa, considera aspectos como la institución, *sede*, carrera, *jornada* y versión. Esto implica que un cambio (o error en la información) de la sede puede verse como un cambio de carrera que no necesariamente refleja la realidad. Por ejemplo, en el caso del MRUN 5, entra en 2010 al CFT SANTO TOMAS a estudiar TECNICO EN ENFERMERIA GINECOOBSTETRICA Y NEONATAL. Para el año 2011, el código de carrera cambia debido a una diferencia en la sede, sin embargo este cambio se revierte en 2011.	Otra opción sería usar la variable `nomb_carrera`, pero esta también podría presentar variaciones de un año a otro.
+
+##### 3.3 Create toy dataset to test functions
+```{r eval= FALSE}
+# Load datasets
+#-------------------------------------------------------------------------------
+# Load database 2007-2019
+matsup_allvars <- readRDS("2_data/saved_R_objects/01_matsup_2007_2019.RDS")
+# Make toy database to test functions
+set.seed(123)
+toy_matsup <- data.table(sample_n(matsup_allvars, 100000))
+```
+
+##### 3.4 Rename object
+```{r}
+# Load datasets
+#-------------------------------------------------------------------------------
+# Load database 2007-2019
+toy_matsup <- readRDS("2_data/saved_R_objects/01_matsup_2007_2019.RDS")
+# Copy dataset with other name
+##toy_matsup <- matsup_allvars # this is just to avoid changing the name for all code
+##rm(matsup_allvars)
+```
+
+##### 3.6 Make functions to obtain data
+```{r}
+# Create functions
+#-------------------------------------------------------------------------------
+Get1stData <- function(x) {
+  data1st = ifelse(all(is.na(x)), NA, x[min(which(!is.na(x)))])
+  return(data1st)
+  }
+GetNumUniq <- function(x) {
+  length(unique(x[!is.na(x)]))
+  }
+GetMostCommon <- function(x) {
+  names(which.max(table(x[!is.na(x)])))
+  }
+Get2ndData <- function(x) {
+  code2nd = x[min(which(!is.na(x)))+1]
+  ifelse(is.na(code2nd), 0, code2nd)
+  }
+GetDropout <- function(x) {
+  code1st = x[min(which(!is.na(x)))]
+  code2nd = x[min(which(!is.na(x)))+1]
+  return(code1st != ifelse(is.na(code2nd), 0, code2nd))
+  }
+GetExcluded <- function(x) {
+  index1st = min(which(!is.na(x)))
+  code1st = x[index1st]
+  code2nd = ifelse(is.na(x[index1st+1]), 0, x[index1st+1])
+  code3rd = ifelse(is.na(x[index1st+2]), 0, x[index1st+2])
+  return(code2nd == 0 & code3rd == 0)
+  }
+GetChanged <- function(x) {
+  index1st = min(which(!is.na(x)))
+  code1st = x[index1st]
+  code2nd = ifelse(is.na(x[index1st+1]), 0, x[index1st+1])
+  return(code1st != code2nd & code2nd!=0)
+  }
+```
+
+##### 3.7 Identify Dropouts
+```{r}
+# Identify Dropout Students
+#-------------------------------------------------------------------------------
+# Run functions
+cod_carr_vec <- paste0("cod_carr_", 2007:2019)
+toy_matsup$cod_carr <- toy_matsup[ , apply(.SD, 1, Get1stData), .SDcols = cod_carr_vec]
+toy_matsup$cod_carr_2nd <- toy_matsup[ , apply(.SD, 1, Get2ndData), .SDcols = cod_carr_vec]
+toy_matsup$num_uniq_prog <- apply(toy_matsup[,..cod_carr_vec], 1, GetNumUniq)
+toy_matsup$dropout <- apply(toy_matsup[,..cod_carr_vec], 1, GetDropout)
+toy_matsup$excluded <- apply(toy_matsup[,..cod_carr_vec], 1, GetExcluded)
+# Cases in 2019 changed to Dropout == FALSE
+toy_matsup$dropout[toy_matsup$year_1st_data==2019] <- FALSE
+toy_matsup$excluded[toy_matsup$year_1st_data==2019] <- FALSE
+# Changes from programmes
+toy_matsup$change <- apply(toy_matsup[,..cod_carr_vec], 1, GetChanged)
+toy_matsup$drop_change <- fifelse(
+  toy_matsup$dropout == TRUE & toy_matsup$change == TRUE, "Change",
+  fifelse(toy_matsup$dropout == TRUE, "Dropout", "Stay"))
+# Change variables to factors
+toy_matsup$dropout <- factor(as.numeric(toy_matsup$dropout), levels = c(0, 1), labels = c("Not-drop", "Drop"))
+toy_matsup$excluded <- factor(as.numeric(toy_matsup$excluded), levels = c(0, 1), labels = c("Not-excluded", "Excluded"))
+toy_matsup$change <- factor(as.numeric(toy_matsup$change), levels = c(0, 1), labels = c("Not-change", "Change"))
+toy_matsup$drop_change <- factor(toy_matsup$drop_change)
+toy_matsup$drop_change <- relevel(toy_matsup$drop_change, ref = 3) # Reference: Stay
+toy_matsup$withdraw <- rep(0, nrow(toy_matsup))
+toy_matsup$withdraw[toy_matsup$dropout == "Drop"] <- 1
+toy_matsup$withdraw[toy_matsup$change == "Change"] <- 0
+toy_matsup$withdraw <- factor(toy_matsup$withdraw, levels = c(0, 1), labels = c("Not-withdraw", "Withdraw"))
+# Number of programmes in the same year
+num_prog_yr_vec <- paste0("num_prog_yr_", 2007:2019)
+toy_matsup[ , num_prog_yr:=apply(.SD, 1, Get1stData), .SDcols = num_prog_yr_vec]
+# Change order of columns
+newvars <- c("mrun", "cod_carr", "cod_carr_2nd", "num_uniq_prog", "num_prog_yr",
+             "year_1st_data", "dropout", "excluded", "change", "drop_change", "withdraw")
+setcolorder(toy_matsup, newvars)
+rm(cod_carr_vec, newvars, num_prog_yr_vec)
+```
+
+################################################################################
+## 4. Clean data and remove duplicates
+
+##### 4.1 Tables with duplicated
+```{r}
+# Make DT to identify duplicated MRUN
+mrun_dt <- data.table(toy_matsup$mrun)
+names(mrun_dt) <- "mrun"
+mrun_dt[, duplic:= duplicated(mrun_dt$mrun)]
+mrun_times_repeat <- mrun_dt %>% count(mrun)
+setkey(mrun_dt, mrun)
+mrun_dt <- merge(mrun_dt, mrun_times_repeat, by = "mrun", all = TRUE)
+rm(mrun_times_repeat)
+# Tables of duplicated
+message("Observations by num of times duplicated")
+table(mrun_dt$n)
+message("Num of duplicated cases")
+table(mrun_dt$duplic)
+rm(mrun_dt)
+```
+
+##### 4.2 Remove duplicated MRUN
+```{r}
+# Set order of rows to remove cases that drop first
+code_error <- rep(0, nrow(toy_matsup))
+code_error[grep("_", toy_matsup$cod_carr_2nd)] <- 1
+code_error[grep("_", toy_matsup$cod_carr)] <- 2
+toy_matsup[, code_error:=code_error]
+setorderv(toy_matsup, cols = c("mrun", "drop_change", "code_error"), order = c(1,1,1))
+toy_matsup[, code_error:=NULL]
+# Remove duplicated
+toy_matsup[, dupl_mrun:= duplicated(toy_matsup$mrun)]
+toy_matsup <- toy_matsup[toy_matsup$dupl_mrun==FALSE]
+toy_matsup$dupl_mrun <- NULL
+rm(code_error)
+```
+
+################################################################################
+## 5. Preprocess Students' data
+
+##### 5.1 Student's gender data
+```{r}
+# Get student's gender
+#-------------------------------------------------------------------------------
+# Create vector with columns names
+gen_alu_vec <- paste0("gen_alu_", 2007:2019)
+# Checking consistency in Student level variables
+stud_gender <- toy_matsup[ , apply(.SD, 1, Get1stData), .SDcols = gen_alu_vec]
+gend_consist <- toy_matsup[ , apply(.SD, 1, GetNumUniq), .SDcols = gen_alu_vec]
+stud_gend_max <- toy_matsup[which(gend_consist>1), apply(.SD, 1, GetMostCommon), .SDcols = gen_alu_vec]
+stud_gender[gend_consist>1] <- stud_gend_max
+# Make factor column of student gender
+toy_matsup[ , stud_gend_consist := gend_consist]
+toy_matsup[ , stud_gend := stud_gender]
+toy_matsup$stud_gend[toy_matsup$stud_gend=="1"] <- "male"
+toy_matsup$stud_gend[toy_matsup$stud_gend=="2"] <- "female"
+toy_matsup$stud_gend <- as.factor(toy_matsup$stud_gend)
+# Remove unnecesary columns
+toy_matsup <- toy_matsup[ , .SD, .SDcols = -gen_alu_vec]
+rm(stud_gend_max, gend_consist, stud_gender, gen_alu_vec)
+# Table gender
+prop.table(table(toy_matsup$stud_gend, useNA = "ifany"))
+```
+
+##### 5.2 Student's date of birth
+```{r}
+# Get student's Date of Birth
+#-------------------------------------------------------------------------------
+# Create vector with columns names
+fec_nac_alu_vec <- paste0("fec_nac_alu_", 2007:2019)
+# Replace "190001" with NA
+toy_matsup[, (fec_nac_alu_vec) := lapply(.SD, function(x) replace(x, which(x=="190001"), NA)), .SDcols = fec_nac_alu_vec]
+# Checking consistency
+stud_datebirth <- toy_matsup[ , apply(.SD, 1, Get1stData), .SDcols = fec_nac_alu_vec]
+stud_dob_consist <- toy_matsup[ , apply(.SD, 1, GetNumUniq), .SDcols = fec_nac_alu_vec]
+stud_dob_common <- toy_matsup[which(stud_dob_consist > 1), apply(.SD, 1, GetMostCommon), .SDcols = fec_nac_alu_vec]
+stud_datebirth[stud_dob_consist > 1] <- stud_dob_common
+# Make column of student date of birth (as Date)
+toy_matsup[ , stud_dob_consist := stud_dob_consist]
+toy_matsup[ , stud_date_birth := stud_datebirth]
+toy_matsup$stud_year_birth <- as.numeric(substr(toy_matsup$stud_date_birth, 1, 4))
+toy_matsup$stud_date_birth <- gsub("(\\d{4})(\\d{2})$", "\\1-\\2-01", toy_matsup$stud_date_birth)
+toy_matsup$stud_date_birth <- as.Date(toy_matsup$stud_date_birth, "%Y-%m-%d")
+# Remove unnecesary columns
+toy_matsup <- toy_matsup[ , .SD, .SDcols = -fec_nac_alu_vec]
+rm(stud_dob_common, stud_datebirth, fec_nac_alu_vec, stud_dob_consist)
+```
+
+##### 5.3 Higher education institution variables
+```{r}
+# Get Higher education institution variables
+#-------------------------------------------------------------------------------
+# Code of institution
+cod_inst_vec <- paste0("cod_inst_", 2007:2019)
+toy_matsup[ , inst_code:=apply(.SD, 1, Get1stData), .SDcols = cod_inst_vec]
+# Type of institution
+tipo_inst_3_vec <- paste0("tipo_inst_3_", 2007:2019)
+toy_matsup$type <- apply(toy_matsup[, ..tipo_inst_3_vec], 1, Get1stData)
+# This df is created to make a lookup table to replace values
+# https://stackoverflow.com/questions/44590935
+inst_df <- cbind.data.frame(
+  "original" = c("Institutos Profesionales",
+                 "Centros de Formación Técnica",
+                 "Centros de Formaci?n T?cnica",
+                 "Universidades Privadas",
+                 "Universidades Estatales CRUCH",
+                 "Universidades Privadas CRUCH",
+                 "Centros de Formaci?n T?cnica Estatales",
+                 "Centros de Formación Técnica Estatal",
+                 "Universidades (* Carrera en Convenio)"),
+  "types" = c("IP", "CFT", "CFT", "University", "University",
+              "University", "CFT", "CFT", "University"),
+  "control" = c("Private", "Private", "Private", "Private",
+                "Public", "Private", "Public", "Public", "Public"),
+  "cruch" = c(0, 0, 0, 0, 1, 1, 0, 0, 1),
+  stringsAsFactors = FALSE)
+# Recode types of institutions
+toy_matsup[.(type = inst_df$original, to = inst_df$types), on = "type", inst_type := i.to]
+toy_matsup[.(type = inst_df$original, to = inst_df$control), on = "type", inst_control := i.to]
+toy_matsup[.(type = inst_df$original, to = inst_df$cruch), on = "type", inst_cruch := i.to]
+toy_matsup$type <- NULL
+rm(inst_df, tipo_inst_3_vec, cod_inst_vec)
+# Add institution accreditation variable
+acreditada_inst_vec <- paste0("acreditada_inst_", 2007:2019)
+toy_matsup$inst_accred <- apply(toy_matsup[, ..acreditada_inst_vec], 1, Get1stData)
+rm(acreditada_inst_vec)
+toy_matsup$inst_accred <- as.factor(toy_matsup$inst_accred)
+toy_matsup$inst_accred <- relevel(toy_matsup$inst_accred, ref = 2) # NO ACREDITADA
+# Recode and transform to factor
+toy_matsup$inst_code <- as.factor(toy_matsup$inst_code)
+toy_matsup$inst_type <- as.factor(toy_matsup$inst_type)
+toy_matsup$inst_type <- relevel(toy_matsup$inst_type, ref = 3) # Reference: University
+toy_matsup$inst_control <- as.factor(toy_matsup$inst_control)
+toy_matsup$inst_control <- relevel(toy_matsup$inst_control, ref = 2) # Reference: Public
+toy_matsup$inst_cruch <- as.factor(toy_matsup$inst_cruch) # Reference: Not CRUCH
+```
+
+##### 5.4 Higher education programme variables
+```{r}
+# Higher education programme variables
+#-------------------------------------------------------------------------------
+# Programme name
+nomb_carr_vec <- paste0("nomb_carrera_", 2007:2019)
+toy_matsup$prog_name <- apply(toy_matsup[, ..nomb_carr_vec], 1, Get1stData)
+# Programme code rename
+setnames(toy_matsup, old = "cod_carr", new = "prog_code")
+setnames(toy_matsup, old = "cod_carr_2nd", new = "prog_code_2nd")
+# Programme hours
+jornada_vec <- paste0("jornada_", 2007:2019)
+toy_matsup$prog_jornada <- apply(toy_matsup[, ..jornada_vec], 1, Get1stData)
+toy_matsup$prog_jornada <- as.factor(toy_matsup$prog_jornada)
+toy_matsup$prog_jornada <- relevel(toy_matsup$prog_jornada, ref = 2) # Reference: Diurno
+# Recode programme level
+nivel_carrera_2_vec <- paste0("nivel_carrera_2_", 2007:2019)
+toy_matsup$prog_level <- apply(toy_matsup[, ..nivel_carrera_2_vec], 1, Get1stData)
+level_programme <- cbind.data.frame(
+  "original" = c("Carreras Técnicas", "Carreras Profesionales", "Carreras T?cnicas"),
+  "recode" = c("Tecnica", "Profesional", "Tecnica"), stringsAsFactors = FALSE)
+toy_matsup[.(prog_level = level_programme$original, to = level_programme$recode),
+           on = "prog_level", prog_level := i.to]
+toy_matsup$prog_level <- as.factor(toy_matsup$prog_level)
+toy_matsup$prog_level <- relevel(toy_matsup$prog_level, ref = 1) # Reference: Profesional
+# Tuition
+valor_arancel_vec <- paste0("valor_arancel_", 2007:2019)
+toy_matsup$prog_tuition <- apply(toy_matsup[, ..valor_arancel_vec], 1, Get1stData)
+# Enrolment fee
+valor_matricula_vec <- paste0("valor_matricula_", 2007:2019)
+toy_matsup$prog_enrol_fee <- apply(toy_matsup[, ..valor_matricula_vec], 1, Get1stData)
+# Acreditation
+acreditada_carr_vec <- paste0("acreditada_carr_", 2007:2019)
+toy_matsup$prog_accredit <- apply(toy_matsup[, ..acreditada_carr_vec], 1, Get1stData)
+toy_matsup$prog_accredit[toy_matsup$prog_accredit != "ACREDITADA"] <- "NO ACREDITADA"
+toy_matsup$prog_accredit <- as.factor(toy_matsup$prog_accredit)
+toy_matsup$prog_accredit <- relevel(toy_matsup$prog_accredit, ref = 2) # Reference: NO ACREDITADA
+# Programme plan
+tipo_plan_vec <- paste0("tipo_plan_carr_", 2007:2019)
+toy_matsup$progr_plan <- apply(toy_matsup[, ..tipo_plan_vec], 1, Get1stData)
+toy_matsup$progr_plan <- as.factor(toy_matsup$progr_plan)
+toy_matsup$progr_plan <- relevel(toy_matsup$progr_plan, ref = 2) # Reference: Plan Regular
+# Programme length (duration in semesters)
+dur_total_carr_vec <- paste0("dur_total_carr_", 2007:2019)
+toy_matsup$progr_len <- apply(toy_matsup[, ..dur_total_carr_vec], 1, Get1stData)
+# remove vectors
+rm(nomb_carr_vec, jornada_vec, nivel_carrera_2_vec, level_programme, valor_arancel_vec,
+   valor_matricula_vec, acreditada_carr_vec, tipo_plan_vec, dur_total_carr_vec)
+```
+
+##### 5.5 Higher education programme areas
+```{r}
+# Higher education programme areas
+#-------------------------------------------------------------------------------
+# Areas and disciplines
+area_conocimiento_vec <- paste0("area_conocimiento_", 2007:2019)
+toy_matsup$prog_area1 <- apply(toy_matsup[, ..area_conocimiento_vec], 1, Get1stData)
+oecd_area_vec <- paste0("oecd_area_", 2007:2019)
+toy_matsup$prog_area2 <- apply(toy_matsup[, ..oecd_area_vec], 1, Get1stData)
+oecd_subarea_vec <- paste0("oecd_subarea_", 2007:2019)
+toy_matsup$prog_area3 <- apply(toy_matsup[, ..oecd_subarea_vec], 1, Get1stData)
+rm(area_conocimiento_vec, oecd_area_vec, oecd_subarea_vec)
+# Recoding programme area 1
+prog_area_1 <- toy_matsup$prog_area1
+prog_area_1 <- case_when(
+  prog_area_1 == "Educación" ~ "Educacion",
+  prog_area_1 == "Educaci?n" ~ "Educacion",
+  prog_area_1 == "Tecnología" ~ "Tecnologia",
+  prog_area_1 == "Tecnolog?a" ~ "Tecnologia",
+  prog_area_1 == "Ciencias Básicas" ~ "Ciencias Basicas",
+  prog_area_1 == "Ciencias B?sicas" ~ "Ciencias Basicas",
+  prog_area_1 == "Ciencias B?sicas" ~ "Ciencias Basicas",
+  prog_area_1 == "Ciencias B?sicas" ~ "Ciencias Basicas",
+  prog_area_1 == "Administración y Comercio" ~ "Administracion y Comercio",
+  prog_area_1 == "Administraci?n y Comercio" ~ "Administracion y Comercio",
+  prog_area_1 == "Sin área definida" ~ "Sin area definida",
+  TRUE ~ prog_area_1)
+toy_matsup$prog_area1 <- prog_area_1
+toy_matsup$prog_area1 <- as.factor(toy_matsup$prog_area1)
+toy_matsup$prog_area1 <- relevel(toy_matsup$prog_area1, ref = 1) # Administracion y Comercio
+rm(prog_area_1)
+# Recoding programme area 2
+prog_area_2 <- toy_matsup$prog_area2
+prog_area_2 <- case_when(
+  prog_area_2 == "Ciencias Sociales, Ense?anza Comercial y Derecho" ~ "Ciencias Sociales, Ensenanza Comercial y Derecho",
+  prog_area_2 == "Ciencias Sociales, Enseñanza Comercial y Derecho" ~ "Ciencias Sociales, Ensenanza Comercial y Derecho",
+  prog_area_2 == "Educación" ~ "Educacion",
+  prog_area_2 == "Educaci?n" ~ "Educacion",
+  prog_area_2 == "Ingenier?a, Industria y Construcci?n" ~ "Ingenieria, Industria y Construccion",
+  prog_area_2 == "Ingeniería, Industria y Construcción" ~ "Ingenieria, Industria y Construccion",
+  prog_area_2 == "Sin área definida" ~ "Sin area definida",
+  TRUE ~ prog_area_2)
+toy_matsup$prog_area2 <- prog_area_2
+toy_matsup$prog_area2 <- as.factor(toy_matsup$prog_area2)
+toy_matsup$prog_area2 <- relevel(toy_matsup$prog_area2, ref = 1) # Agricultura
+rm(prog_area_2)
+# Recoding programme area 3
+prog_area_3 <- toy_matsup$prog_area3
+prog_area_3 <- case_when(
+  prog_area_3 == "Arquitectura y Construcci?n" ~ "Arquitectura y Construccion",
+  prog_area_3 == "Arquitectura y Construcción" ~ "Arquitectura y Construccion",
+  prog_area_3 == "Ciencias de la Educaci?n" ~ "Ciencias de la Educacion",
+  prog_area_3 == "Ciencias de la Educación" ~ "Ciencias de la Educacion",
+  prog_area_3 == "Ciencias F?sicas" ~ "Ciencias Fisicas",
+  prog_area_3 == "Ciencias Físicas" ~ "Ciencias Fisicas",
+  prog_area_3 == "Ense?anza Comercial y Administraci?n" ~ "Ensenanza Comercial y Administracion",
+  prog_area_3 == "Enseñanza Comercial y Administración" ~ "Ensenanza Comercial y Administracion",
+  prog_area_3 == "Formaci?n de Personal Docente" ~ "Formacion de Personal Docente",
+  prog_area_3 == "Formación de Personal Docente" ~ "Formacion de Personal Docente",
+  prog_area_3 == "Industria y Producci?n" ~ "Industria y Produccion",
+  prog_area_3 == "Industria y Producción" ~ "Industria y Produccion",
+  prog_area_3 == "Inform?tica" ~ "Informatica",
+  prog_area_3 == "Informática" ~ "Informatica",
+  prog_area_3 == "Ingenier?a y Profesiones Afines" ~ "Ingenieria y Profesiones Afines",
+  prog_area_3 == "Ingeniería y Profesiones Afines" ~ "Ingenieria y Profesiones Afines",
+  prog_area_3 == "Matem?ticas y Estad?sticas" ~ "Matematicas y Estadisticas",
+  prog_area_3 == "Matemáticas y Estadísticas" ~ "Matematicas y Estadisticas",
+  prog_area_3 == "Periodismo e Informaci?n" ~ "Periodismo e Informacion",
+  prog_area_3 == "Periodismo e Información" ~ "Periodismo e Informacion",
+  prog_area_3 == "Protecci?n del Medio Ambiente" ~ "Proteccion del Medio Ambiente",
+  prog_area_3 == "Protección del Medio Ambiente" ~ "Proteccion del Medio Ambiente",
+  prog_area_3 == "Sin área definida" ~ "Sin area definida",
+  TRUE ~ prog_area_3)
+toy_matsup$prog_area3 <- prog_area_3
+toy_matsup$prog_area3 <- as.factor(toy_matsup$prog_area3)
+toy_matsup$prog_area3 <- relevel(toy_matsup$prog_area3, ref = 1) # Agricultura, Silvicultura y Pesca
+rm(prog_area_3)
+```
+
+################################################################################
+## 6. Subsetting the data
+Cases that were enrolled in a programme since 2007 are removed because we don't have information about the year in which they entered the programme, hence we can't know if they are dropping out after the first year or just finishing their programme.
+
+##### 6.1 Subset observations and variables
+```{r}
+# Subset Data
+#-------------------------------------------------------------------------------
+# Remove cases with firts data from 2007, 2008 and 2019
+toy_matsup <- toy_matsup[toy_matsup$year_1st_data > 2008 & toy_matsup$year_1st_data < 2019]
+# Remove variables not used
+keep_vars <- c("mrun", "num_uniq_prog", "year_1st_data", "year_ori_enrol",
+               "dropout", "excluded", "change", "drop_change", "withdraw", "stud_gend",
+               "stud_gend_consist", "stud_date_birth", "stud_year_birth",
+               "stud_dob_consist", "inst_code", "inst_type", "inst_control",
+               "inst_cruch", "inst_accred", "prog_name", "prog_code", "prog_code_2nd", 
+               "prog_jornada", "prog_level", "prog_tuition", "prog_enrol_fee",
+               "prog_accredit", "progr_plan", "progr_len", "prog_area1",
+               "prog_area2", "prog_area3")
+toy_matsup <- toy_matsup[, ..keep_vars]
+setcolorder(toy_matsup, keep_vars)
+# Rename dataset
+dropout_data <- toy_matsup
+rm(toy_matsup, keep_vars)
+```
+
+################################################################################  
+## 7. Final Version
+
+##### 7.1 Save final version
+```{r}
+# Save Object
+saveRDS(dropout_data, file = "2_data/saved_R_objects/02_dropout_data_2009_2018.RDS")
+```
+
+##### 7.2 Tables of Dropouts, changers and excluded
+```{r}
+# Tables Dropout
+#-------------------------------------------------------------------------------
+# Tables by year
+round(prop.table(table(dropout_data$dropout, dropout_data$year_1st_data, useNA = "ifany"),2)*100, 1)
+round(prop.table(table(dropout_data$excluded, dropout_data$year_1st_data, useNA = "ifany"),2)*100, 1)
+round(prop.table(table(dropout_data$drop_change, dropout_data$year_1st_data, useNA = "ifany"),2)*100, 1)
+# Tables regular dropout V. other types
+table(dropout_data$dropout, dropout_data$excluded, useNA = "ifany")
+table(dropout_data$dropout, dropout_data$change, useNA = "ifany")
+table(dropout_data$dropout, dropout_data$withdraw, useNA = "ifany")
+```
+
+################################################################################
+## THE END
+################################################################################
